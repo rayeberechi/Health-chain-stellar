@@ -1,9 +1,9 @@
 use crate::storage;
-use crate::types::{BloodRegisteredEvent, BloodStatus, BloodType};
+use crate::types::{BloodStatus, BloodType};
 use crate::{InventoryContract, InventoryContractClient};
 use soroban_sdk::{
-    testutils::{Address as _, Events, Ledger},
-    vec, Address, Env, IntoVal, Symbol, Vec as SdkVec,
+    testutils::{Address as _, Ledger},
+    vec, Address, Env, String,
 };
 
 fn create_test_contract<'a>() -> (Env, Address, InventoryContractClient<'a>, Address) {
@@ -22,7 +22,7 @@ fn create_test_contract<'a>() -> (Env, Address, InventoryContractClient<'a>, Add
 
 #[test]
 fn test_initialize_success() {
-    let (env, admin, client, contract_id) = create_test_contract();
+    let (env, admin, _client, contract_id) = create_test_contract();
 
     // Verify admin is set
     let stored_admin = env.as_contract(&contract_id, || storage::get_admin(&env));
@@ -33,7 +33,7 @@ fn test_initialize_success() {
 #[test]
 #[should_panic(expected = "Error(Contract, #0)")]
 fn test_initialize_already_initialized() {
-    let (env, admin, client, _contract_id) = create_test_contract();
+    let (_env, admin, client, _contract_id) = create_test_contract();
 
     // Try to initialize again
     client.initialize(&admin);
@@ -318,4 +318,485 @@ fn test_register_blood_edge_case_expiration() {
     );
     let unit2 = client.get_blood_unit(&id2);
     assert_eq!(unit2.expiration_timestamp, max_expiration);
+}
+
+
+#[test]
+fn test_update_status_available_to_reserved() {
+    let (env, admin, client, _contract_id) = create_test_contract();
+
+    let bank = admin.clone();
+    let current_time = 1000u64;
+    env.ledger().set_timestamp(current_time);
+    let expiration = current_time + (30 * 86400);
+
+    let unit_id = client.register_blood(&bank, &BloodType::APositive, &450u32, &expiration, &None);
+
+    // Update to Reserved
+    let updated_unit = client.update_status(
+        &unit_id,
+        &BloodStatus::Reserved,
+        &admin,
+        &Some(String::from_str(&env, "Reserved for Hospital A")),
+    );
+
+    assert_eq!(updated_unit.status, BloodStatus::Reserved);
+
+    // Verify it persisted
+    let stored = client.get_blood_unit(&unit_id);
+    assert_eq!(stored.status, BloodStatus::Reserved);
+}
+
+#[test]
+fn test_update_status_complete_flow() {
+    let (env, admin, client, _contract_id) = create_test_contract();
+
+    let bank = admin.clone();
+    let current_time = 1000u64;
+    env.ledger().set_timestamp(current_time);
+    let expiration = current_time + (30 * 86400);
+
+    let unit_id = client.register_blood(&bank, &BloodType::APositive, &450u32, &expiration, &None);
+
+    // Available -> Reserved
+    let unit = client.update_status(
+        &unit_id,
+        &BloodStatus::Reserved,
+        &admin,
+        &Some(String::from_str(&env, "Reserved")),
+    );
+    assert_eq!(unit.status, BloodStatus::Reserved);
+
+    // Reserved -> InTransit
+    let unit = client.update_status(
+        &unit_id,
+        &BloodStatus::InTransit,
+        &admin,
+        &Some(String::from_str(&env, "In transit")),
+    );
+    assert_eq!(unit.status, BloodStatus::InTransit);
+
+    // InTransit -> Delivered
+    let unit = client.update_status(
+        &unit_id,
+        &BloodStatus::Delivered,
+        &admin,
+        &Some(String::from_str(&env, "Delivered to Hospital A")),
+    );
+    assert_eq!(unit.status, BloodStatus::Delivered);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #41)")]
+fn test_update_status_invalid_transition() {
+    let (env, admin, client, _contract_id) = create_test_contract();
+
+    let bank = admin.clone();
+    let current_time = 1000u64;
+    env.ledger().set_timestamp(current_time);
+    let expiration = current_time + (30 * 86400);
+
+    let unit_id = client.register_blood(&bank, &BloodType::APositive, &450u32, &expiration, &None);
+
+    // Try to go directly from Available to Delivered (invalid)
+    client.update_status(
+        &unit_id,
+        &BloodStatus::Delivered,
+        &admin,
+        &Some(String::from_str(&env, "Skip to delivered")),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_update_status_unauthorized() {
+    let (env, admin, client, _contract_id) = create_test_contract();
+
+    let bank = admin.clone();
+    let current_time = 1000u64;
+    env.ledger().set_timestamp(current_time);
+    let expiration = current_time + (30 * 86400);
+
+    let unit_id = client.register_blood(&bank, &BloodType::APositive, &450u32, &expiration, &None);
+
+    let unauthorized = Address::generate(&env);
+
+    // Try to update without authorization
+    client.update_status(
+        &unit_id,
+        &BloodStatus::Reserved,
+        &unauthorized,
+        &None,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #21)")]
+fn test_update_status_nonexistent_unit() {
+    let (env, admin, client, _contract_id) = create_test_contract();
+
+    // Try to update unit that doesn't exist
+    client.update_status(
+        &999,
+        &BloodStatus::Reserved,
+        &admin,
+        &None,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #23)")]
+fn test_update_status_expired_unit() {
+    let (env, admin, client, _contract_id) = create_test_contract();
+
+    let bank = admin.clone();
+    let current_time = 1000u64;
+    env.ledger().set_timestamp(current_time);
+    let expiration = current_time + (5 * 86400); // 5 days
+
+    let unit_id = client.register_blood(&bank, &BloodType::APositive, &450u32, &expiration, &None);
+
+    // Move time past expiration
+    env.ledger().set_timestamp(expiration + 100);
+
+    // Try to update expired unit
+    client.update_status(
+        &unit_id,
+        &BloodStatus::Reserved,
+        &admin,
+        &None,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #41)")]
+fn test_update_status_from_terminal_delivered() {
+    let (env, admin, client, _contract_id) = create_test_contract();
+
+    let bank = admin.clone();
+    let current_time = 1000u64;
+    env.ledger().set_timestamp(current_time);
+    let expiration = current_time + (30 * 86400);
+
+    let unit_id = client.register_blood(&bank, &BloodType::APositive, &450u32, &expiration, &None);
+
+    // Move to Delivered
+    client.update_status(
+        &unit_id,
+        &BloodStatus::Reserved,
+        &admin,
+        &None,
+    );
+    client.update_status(
+        &unit_id,
+        &BloodStatus::InTransit,
+        &admin,
+        &None,
+    );
+    client.update_status(
+        &unit_id,
+        &BloodStatus::Delivered,
+        &admin,
+        &None,
+    );
+
+    // Try to update from terminal state
+    client.update_status(
+        &unit_id,
+        &BloodStatus::Expired,
+        &admin,
+        &None,
+    );
+}
+
+// ==================== Mark Delivered Tests ====================
+
+#[test]
+fn test_mark_delivered_success() {
+    let (env, admin, client, _contract_id) = create_test_contract();
+
+    let bank = admin.clone();
+    let current_time = 1000u64;
+    env.ledger().set_timestamp(current_time);
+    let expiration = current_time + (30 * 86400);
+
+    let unit_id = client.register_blood(&bank, &BloodType::APositive, &450u32, &expiration, &None);
+
+    // Set to Reserved first (should be InTransit in real scenario, but for test)
+    client.update_status(&unit_id, &BloodStatus::Reserved, &admin, &None);
+    client.update_status(&unit_id, &BloodStatus::InTransit, &admin, &None);
+
+    // Mark as delivered
+    let updated = client.mark_delivered(
+        &unit_id,
+        &admin,
+        &String::from_str(&env, "Hospital A"),
+    );
+
+    assert_eq!(updated.status, BloodStatus::Delivered);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #41)")]
+fn test_mark_delivered_from_available() {
+    let (env, admin, client, _contract_id) = create_test_contract();
+
+    let bank = admin.clone();
+    let current_time = 1000u64;
+    env.ledger().set_timestamp(current_time);
+    let expiration = current_time + (30 * 86400);
+
+    let unit_id = client.register_blood(&bank, &BloodType::APositive, &450u32, &expiration, &None);
+
+    // Try to mark as delivered when still Available (invalid transition)
+    client.mark_delivered(&unit_id, &admin, &String::from_str(&env, "Hospital A"));
+}
+
+// ==================== Mark Expired Tests ====================
+
+#[test]
+fn test_mark_expired_success() {
+    let (env, admin, client, _contract_id) = create_test_contract();
+
+    let bank = admin.clone();
+    let current_time = 1000u64;
+    env.ledger().set_timestamp(current_time);
+    let expiration = current_time + (30 * 86400);
+
+    let unit_id = client.register_blood(&bank, &BloodType::APositive, &450u32, &expiration, &None);
+
+    // Mark as expired from Available state (valid transition)
+    let updated = client.mark_expired(&unit_id, &admin);
+
+    assert_eq!(updated.status, BloodStatus::Expired);
+}
+
+#[test]
+fn test_mark_expired_from_reserved() {
+    let (env, admin, client, _contract_id) = create_test_contract();
+
+    let bank = admin.clone();
+    let current_time = 1000u64;
+    env.ledger().set_timestamp(current_time);
+    let expiration = current_time + (30 * 86400);
+
+    let unit_id = client.register_blood(&bank, &BloodType::APositive, &450u32, &expiration, &None);
+
+    // Move to Reserved
+    client.update_status(&unit_id, &BloodStatus::Reserved, &admin, &None);
+
+    // Mark as expired
+    let updated = client.mark_expired(&unit_id, &admin);
+
+    assert_eq!(updated.status, BloodStatus::Expired);
+}
+
+// ==================== Status History Tests ====================
+
+#[test]
+fn test_status_history_tracking() {
+    let (env, admin, client, _contract_id) = create_test_contract();
+
+    let bank = admin.clone();
+    let current_time = 1000u64;
+    env.ledger().set_timestamp(current_time);
+    let expiration = current_time + (30 * 86400);
+
+    let unit_id = client.register_blood(&bank, &BloodType::APositive, &450u32, &expiration, &None);
+
+    // Perform status changes
+    client.update_status(&unit_id, &BloodStatus::Reserved, &admin, &Some(String::from_str(&env, "Reserved")));
+    env.ledger().set_timestamp(current_time + 100);
+    client.update_status(&unit_id, &BloodStatus::InTransit, &admin, &Some(String::from_str(&env, "In transit")));
+    env.ledger().set_timestamp(current_time + 200);
+    client.update_status(&unit_id, &BloodStatus::Delivered, &admin, &Some(String::from_str(&env, "Delivered")));
+
+    // Get history
+    let history = client.get_status_history(&unit_id);
+
+    // Should have 3 history entries
+    assert_eq!(history.len(), 3);
+
+    // Check first transition: Available -> Reserved
+    let h0 = history.get(0).unwrap();
+    assert_eq!(h0.from_status, BloodStatus::Available);
+    assert_eq!(h0.to_status, BloodStatus::Reserved);
+    assert_eq!(h0.authorized_by, admin);
+
+    // Check second transition: Reserved -> InTransit
+    let h1 = history.get(1).unwrap();
+    assert_eq!(h1.from_status, BloodStatus::Reserved);
+    assert_eq!(h1.to_status, BloodStatus::InTransit);
+
+    // Check third transition: InTransit -> Delivered
+    let h2 = history.get(2).unwrap();
+    assert_eq!(h2.from_status, BloodStatus::InTransit);
+    assert_eq!(h2.to_status, BloodStatus::Delivered);
+}
+
+#[test]
+fn test_status_change_count() {
+    let (env, admin, client, _contract_id) = create_test_contract();
+
+    let bank = admin.clone();
+    let current_time = 1000u64;
+    env.ledger().set_timestamp(current_time);
+    let expiration = current_time + (30 * 86400);
+
+    let unit_id = client.register_blood(&bank, &BloodType::APositive, &450u32, &expiration, &None);
+
+    // Initial count should be 0 (no changes yet)
+    assert_eq!(client.get_status_change_count(&unit_id), 0);
+
+    // Make changes
+    client.update_status(&unit_id, &BloodStatus::Reserved, &admin, &None);
+    assert_eq!(client.get_status_change_count(&unit_id), 1);
+
+    client.update_status(&unit_id, &BloodStatus::InTransit, &admin, &None);
+    assert_eq!(client.get_status_change_count(&unit_id), 2);
+
+    client.update_status(&unit_id, &BloodStatus::Delivered, &admin, &None);
+    assert_eq!(client.get_status_change_count(&unit_id), 3);
+}
+
+// ==================== Batch Update Tests ====================
+
+#[test]
+fn test_batch_update_status_success() {
+    let (env, admin, client, _contract_id) = create_test_contract();
+
+    let bank = admin.clone();
+    let current_time = 1000u64;
+    env.ledger().set_timestamp(current_time);
+    let expiration = current_time + (30 * 86400);
+
+    // Create multiple blood units
+    let id1 = client.register_blood(&bank, &BloodType::APositive, &450u32, &expiration, &None);
+    let id2 = client.register_blood(&bank, &BloodType::BPositive, &450u32, &expiration, &None);
+    let id3 = client.register_blood(&bank, &BloodType::ONegative, &450u32, &expiration, &None);
+
+    // Batch update to Reserved
+    let unit_ids = vec![&env, id1, id2, id3];
+    let count = client.batch_update_status(
+        &unit_ids,
+        &BloodStatus::Reserved,
+        &admin,
+        &Some(String::from_str(&env, "Batch reserved")),
+    );
+
+    assert_eq!(count, 3);
+
+    // Verify all units were updated
+    assert_eq!(client.get_blood_unit(&id1).status, BloodStatus::Reserved);
+    assert_eq!(client.get_blood_unit(&id2).status, BloodStatus::Reserved);
+    assert_eq!(client.get_blood_unit(&id3).status, BloodStatus::Reserved);
+}
+
+#[test]
+fn test_batch_update_status_single_unit() {
+    let (env, admin, client, _contract_id) = create_test_contract();
+
+    let bank = admin.clone();
+    let current_time = 1000u64;
+    env.ledger().set_timestamp(current_time);
+    let expiration = current_time + (30 * 86400);
+
+    let unit_id = client.register_blood(&bank, &BloodType::APositive, &450u32, &expiration, &None);
+
+    let unit_ids = vec![&env, unit_id];
+    let count = client.batch_update_status(
+        &unit_ids,
+        &BloodStatus::Reserved,
+        &admin,
+        &None,
+    );
+
+    assert_eq!(count, 1);
+    assert_eq!(client.get_blood_unit(&unit_id).status, BloodStatus::Reserved);
+}
+
+#[test]
+fn test_batch_update_status_empty_list() {
+    let (env, admin, client, _contract_id) = create_test_contract();
+
+    let empty_list = vec![&env];
+    let count = client.batch_update_status(
+        &empty_list,
+        &BloodStatus::Reserved,
+        &admin,
+        &None,
+    );
+
+    assert_eq!(count, 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #21)")]
+fn test_batch_update_status_nonexistent_unit() {
+    let (env, admin, client, _contract_id) = create_test_contract();
+
+    let bank = admin.clone();
+    let current_time = 1000u64;
+    env.ledger().set_timestamp(current_time);
+    let expiration = current_time + (30 * 86400);
+
+    let unit_id = client.register_blood(&bank, &BloodType::APositive, &450u32, &expiration, &None);
+
+    // Try batch update with one nonexistent unit
+    let unit_ids = vec![&env, unit_id, 999];
+    client.batch_update_status(
+        &unit_ids,
+        &BloodStatus::Reserved,
+        &admin,
+        &None,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_batch_update_status_unauthorized() {
+    let (env, admin, client, _contract_id) = create_test_contract();
+
+    let bank = admin.clone();
+    let current_time = 1000u64;
+    env.ledger().set_timestamp(current_time);
+    let expiration = current_time + (30 * 86400);
+
+    let unit_id = client.register_blood(&bank, &BloodType::APositive, &450u32, &expiration, &None);
+
+    let unauthorized = Address::generate(&env);
+
+    let unit_ids = vec![&env, unit_id];
+    client.batch_update_status(
+        &unit_ids,
+        &BloodStatus::Reserved,
+        &unauthorized,
+        &None,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #41)")]
+fn test_batch_update_status_invalid_transition() {
+    let (env, admin, client, _contract_id) = create_test_contract();
+
+    let bank = admin.clone();
+    let current_time = 1000u64;
+    env.ledger().set_timestamp(current_time);
+    let expiration = current_time + (30 * 86400);
+
+    let id1 = client.register_blood(&bank, &BloodType::APositive, &450u32, &expiration, &None);
+    let id2 = client.register_blood(&bank, &BloodType::BPositive, &450u32, &expiration, &None);
+
+    // Move id1 to Reserved
+    client.update_status(&id1, &BloodStatus::Reserved, &admin, &None);
+
+    // Try batch update to an invalid transition for id1
+    let unit_ids = vec![&env, id1, id2];
+    client.batch_update_status(
+        &unit_ids,
+        &BloodStatus::Delivered, // Invalid from Available and Reserved
+        &admin,
+        &None,
+    );
 }

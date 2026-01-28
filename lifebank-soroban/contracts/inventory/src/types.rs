@@ -1,5 +1,5 @@
 use crate::error::ContractError;
-use soroban_sdk::{contracttype, Address, Map, String, Symbol};
+use soroban_sdk::{contracttype, Address, Map, String, Symbol, Vec};
 
 /// Blood type enumeration supporting all major blood groups
 ///
@@ -238,6 +238,15 @@ pub enum DataKey {
 
     /// Admin address
     Admin,
+
+    /// Status change history for a blood unit
+    StatusHistory(u64), // u64 is blood_unit_id -> Vec<StatusChangeHistory>
+
+    /// Counter for status change history records
+    StatusHistoryCounter,
+
+    /// Counter for status changes on specific blood unit
+    BloodUnitStatusChangeCount(u64), // u64 is blood_unit_id
 }
 
 #[contracttype]
@@ -260,6 +269,69 @@ pub struct BloodRegisteredEvent {
 
     /// When the unit was registered
     pub registered_at: u64,
+}
+
+/// Event emitted when blood unit status changes
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct StatusChangeEvent {
+    /// Unique ID of the blood unit
+    pub blood_unit_id: u64,
+
+    /// Previous status
+    pub from_status: BloodStatus,
+
+    /// New status
+    pub to_status: BloodStatus,
+
+    /// Who authorized this change
+    pub authorized_by: Address,
+
+    /// When the status change occurred
+    pub changed_at: u64,
+
+    /// Optional reason for status change (e.g., "Delivered to Hospital A")
+    pub reason: Option<String>,
+}
+
+/// Historical record of a status change
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct StatusChangeHistory {
+    /// Unique ID for this history record
+    pub id: u64,
+
+    /// Blood unit ID
+    pub blood_unit_id: u64,
+
+    /// Previous status
+    pub from_status: BloodStatus,
+
+    /// New status
+    pub to_status: BloodStatus,
+
+    /// Who authorized this change
+    pub authorized_by: Address,
+
+    /// When the status change occurred
+    pub changed_at: u64,
+
+    /// Optional reason for status change
+    pub reason: Option<String>,
+}
+
+/// Batch status update operation
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct BatchStatusUpdate {
+    /// List of blood unit IDs to update
+    pub blood_unit_ids: Vec<u64>,
+
+    /// New status for all units
+    pub new_status: BloodStatus,
+
+    /// Optional reason for batch update
+    pub reason: Option<String>,
 }
 
 #[cfg(test)]

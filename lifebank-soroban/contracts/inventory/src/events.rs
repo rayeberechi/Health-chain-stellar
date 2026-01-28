@@ -1,5 +1,5 @@
-use crate::types::{BloodRegisteredEvent, BloodType};
-use soroban_sdk::{Address, Env, Symbol};
+use crate::types::{BloodRegisteredEvent, BloodType, StatusChangeEvent};
+use soroban_sdk::{Address, Env, String, Symbol};
 
 /// Emit a BloodRegistered event
 ///
@@ -31,4 +31,28 @@ pub fn emit_blood_registered(
 
     env.events()
         .publish((Symbol::new(env, "blood_registered"),), event);
+}
+
+
+pub fn emit_status_change(
+    env: &Env,
+    blood_unit_id: u64,
+    from_status: crate::types::BloodStatus,
+    to_status: crate::types::BloodStatus,
+    authorized_by: &Address,
+    reason: Option<String>,
+) {
+    let changed_at = env.ledger().timestamp();
+
+    let event = StatusChangeEvent {
+        blood_unit_id,
+        from_status,
+        to_status,
+        authorized_by: authorized_by.clone(),
+        changed_at,
+        reason,
+    };
+
+    env.events()
+        .publish((Symbol::new(env, "status_changed"),), event);
 }

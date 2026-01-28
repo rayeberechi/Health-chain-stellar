@@ -1,6 +1,6 @@
 use crate::error::ContractError;
 use crate::storage::{MAX_EXPIRATION_DAYS, SECONDS_PER_DAY};
-use crate::types::BloodType;
+use crate::types::BloodStatus;
 use soroban_sdk::Env;
 
 /// Validate blood registration parameters
@@ -49,5 +49,16 @@ pub fn validate_minimum_shelf_life(
         return Err(ContractError::InvalidExpiration);
     }
 
+    Ok(())
+}
+
+/// Validate status transition is allowed according to state machine
+pub fn validate_status_transition(
+    current_status: BloodStatus,
+    new_status: BloodStatus,
+) -> Result<(), ContractError> {
+    if !current_status.can_transition_to(&new_status) {
+        return Err(ContractError::InvalidStatusTransition);
+    }
     Ok(())
 }

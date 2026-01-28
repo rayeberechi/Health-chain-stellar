@@ -9,7 +9,7 @@ mod validation;
 use crate::error::ContractError;
 use crate::types::{BloodStatus, BloodType, BloodUnit, DataKey};
 
-use soroban_sdk::{contract, contractimpl, Address, Env, Map};
+use soroban_sdk::{contract, contractimpl, Address, Env, Map, String, Vec};
 #[contract]
 pub struct InventoryContract;
 
@@ -139,6 +139,164 @@ impl InventoryContract {
     /// - `NotFound`: Blood unit with given ID doesn't exist
     pub fn get_blood_unit(env: Env, blood_unit_id: u64) -> Result<BloodUnit, ContractError> {
         storage::get_blood_unit(&env, blood_unit_id).ok_or(ContractError::NotFound)
+    }
+
+
+    pub fn update_status(
+        env: Env,
+        unit_id: u64,
+        new_status: BloodStatus,
+        authorized_by: Address,
+        reason: Option<String>,
+    ) -> Result<BloodUnit, ContractError> {
+        authorized_by.require_auth();
+
+        let admin = storage::get_admin(&env);
+        if authorized_by != admin {
+            return Err(ContractError::Unauthorized);
+        }
+
+        let mut blood_unit = storage::get_blood_unit(&env, unit_id)
+            .ok_or(ContractError::NotFound)?;
+
+        let current_time = env.ledger().timestamp();
+
+        if blood_unit.is_expired(current_time) {
+            return Err(ContractError::BloodUnitExpired);
+        }
+
+        if blood_unit.status.is_terminal() {
+            return Err(ContractError::InvalidStatusTransition);
+        }
+
+        validation::validate_status_transition(blood_unit.status, new_status)?;
+
+        let old_status = blood_unit.status;
+        blood_unit.status = new_status;
+        storage::set_blood_unit(&env, &blood_unit);
+
+        storage::record_status_change(
+            &env,
+            unit_id,
+            old_status,
+            new_status,
+            &authorized_by,
+            reason.clone(),
+        );
+
+        events::emit_status_change(
+            &env,
+            unit_id,
+            old_status,
+            new_status,
+            &authorized_by,
+            reason,
+        );
+
+        Ok(blood_unit)
+    }
+
+    
+    pub fn mark_delivered(
+        env: Env,
+        unit_id: u64,
+        authorized_by: Address,
+        delivery_location: String,
+    ) -> Result<BloodUnit, ContractError> {
+        Self::update_status(
+            env,
+            unit_id,
+            BloodStatus::Delivered,
+            authorized_by,
+            Some(delivery_location),
+        )
+    }
+
+   
+    pub fn mark_expired(
+        env: Env,
+        unit_id: u64,
+        authorized_by: Address,
+    ) -> Result<BloodUnit, ContractError> {
+        let reason = String::from_str(&env, "Marked as expired");
+        Self::update_status(
+            env,
+            unit_id,
+            BloodStatus::Expired,
+            authorized_by,
+            Some(reason),
+        )
+    }
+
+    pub fn batch_update_status(
+        env: Env,
+        unit_ids: Vec<u64>,
+        new_status: BloodStatus,
+        authorized_by: Address,
+        reason: Option<String>,
+    ) -> Result<u64, ContractError> {
+        authorized_by.require_auth();
+
+        let admin = storage::get_admin(&env);
+        if authorized_by != admin {
+            return Err(ContractError::Unauthorized);
+        }
+
+        let current_time = env.ledger().timestamp();
+        let mut updated_count = 0u64;
+
+        for i in 0..unit_ids.len() {
+            let unit_id = unit_ids.get(i).ok_or(ContractError::NotFound)?;
+            let mut blood_unit = storage::get_blood_unit(&env, unit_id)
+                .ok_or(ContractError::NotFound)?;
+
+            if blood_unit.is_expired(current_time) {
+                return Err(ContractError::BloodUnitExpired);
+            }
+
+            if blood_unit.status.is_terminal() {
+                return Err(ContractError::InvalidStatusTransition);
+            }
+
+            validation::validate_status_transition(blood_unit.status, new_status)?;
+
+            let old_status = blood_unit.status;
+            blood_unit.status = new_status;
+            storage::set_blood_unit(&env, &blood_unit);
+
+            storage::record_status_change(
+                &env,
+                unit_id,
+                old_status,
+                new_status,
+                &authorized_by,
+                reason.clone(),
+            );
+
+            events::emit_status_change(
+                &env,
+                unit_id,
+                old_status,
+                new_status,
+                &authorized_by,
+                reason.clone(),
+            );
+
+            updated_count += 1;
+        }
+
+        Ok(updated_count)
+    }
+
+    pub fn get_status_history(
+        env: Env,
+        unit_id: u64,
+    ) -> Vec<crate::types::StatusChangeHistory> {
+        storage::get_status_history(&env, unit_id)
+    }
+
+    pub fn get_status_change_count(env: Env, unit_id: u64) -> u64 {
+        storage::get_blood_unit_status_change_count(&env, unit_id)
     }
 }
 
