@@ -4,6 +4,10 @@ use soroban_sdk::{
     String, Symbol, Vec,
 };
 
+pub mod payments;
+#[cfg(test)]
+mod test_payments;
+
 /// Error types for blood registration and transfer
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]

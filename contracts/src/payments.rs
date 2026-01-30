@@ -1,0 +1,217 @@
+use soroban_sdk::{contracttype, Address, Symbol, Vec};
+
+/// Represents the current state of a payment in its lifecycle
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaymentStatus {
+    /// Payment created but not yet funded
+    Pending,
+    /// Payment funds locked in escrow
+    Escrowed,
+    /// Payment successfully completed and funds transferred
+    Completed,
+    /// Payment refunded to payer
+    Refunded,
+    /// Payment cancelled before escrow
+    Cancelled,
+}
+
+/// Conditions that must be met before escrow funds can be released
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReleaseConditions {
+    /// Whether medical records have been verified
+    pub medical_records_verified: bool,
+    /// Minimum timestamp before release is allowed
+    pub min_timestamp: u64,
+    /// Optional address authorized to approve release
+    pub authorized_approver: Option<Address>,
+}
+
+/// Core payment transaction structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Payment {
+    /// Unique payment identifier
+    pub id: u64,
+    /// Associated request ID
+    pub request_id: u64,
+    /// Address sending the payment
+    pub payer: Address,
+    /// Address receiving the payment
+    pub payee: Address,
+    /// Payment amount in smallest unit
+    pub amount: i128,
+    /// Asset contract address
+    pub asset: Address,
+    /// Current payment status
+    pub status: PaymentStatus,
+    /// Timestamp when escrow was released (if applicable)
+    pub escrow_released_at: Option<u64>,
+}
+
+/// Escrow account holding locked funds
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EscrowAccount {
+    /// Associated payment ID
+    pub payment_id: u64,
+    /// Amount locked in escrow
+    pub locked_amount: i128,
+    /// Conditions for releasing funds
+    pub release_conditions: ReleaseConditions,
+}
+
+/// Fee breakdown for a transaction
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FeeStructure {
+    /// Platform service fee
+    pub service_fee: i128,
+    /// Network transaction fee
+    pub network_fee: i128,
+    /// Optional performance-based bonus
+    pub performance_bonus: i128,
+}
+
+/// Additional metadata for transaction tracking
+///
+/// Note: Soroban Symbols have strict constraints:
+/// - Only a-z, A-Z, 0-9, and underscore allowed
+/// - No spaces, hyphens, dots, or special characters
+/// - Maximum 32 characters for regular Symbol, 9 for symbol_short!
+///
+/// For complex strings like URLs or multi-word descriptions,
+/// consider using String type or storing a hash/reference ID
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransactionMetadata {
+    /// Short identifier or category (use underscores for spaces)
+    pub description: Symbol,
+    /// Categorization tags (short identifiers only)
+    pub tags: Vec<Symbol>,
+    /// Reference identifier (not a full URL - use hash or ID)
+    pub reference_url: Symbol,
+}
+
+impl Payment {
+    pub fn validate(&self) -> Result<(), PaymentError> {
+        // Amount must be positive
+        if self.amount <= 0 {
+            return Err(PaymentError::InvalidAmount);
+        }
+
+        // Payer and payee must be different
+        if self.payer == self.payee {
+            return Err(PaymentError::SamePayerPayee);
+        }
+
+        // Asset must not be payer or payee
+        if self.asset == self.payer || self.asset == self.payee {
+            return Err(PaymentError::InvalidAsset);
+        }
+
+        Ok(())
+    }
+    /// Checks if payment can transition to a new status
+    pub fn can_transition_to(&self, new_status: PaymentStatus) -> bool {
+        match (self.status, new_status) {
+            // Pending can go to Escrowed or Cancelled
+            (PaymentStatus::Pending, PaymentStatus::Escrowed) => true,
+            (PaymentStatus::Pending, PaymentStatus::Cancelled) => true,
+
+            // Escrowed can go to Completed or Refunded
+            (PaymentStatus::Escrowed, PaymentStatus::Completed) => true,
+            (PaymentStatus::Escrowed, PaymentStatus::Refunded) => true,
+
+            // Terminal states cannot transition
+            (PaymentStatus::Completed, _) => false,
+            (PaymentStatus::Refunded, _) => false,
+            (PaymentStatus::Cancelled, _) => false,
+
+            // All other transitions are invalid
+            _ => false,
+        }
+    }
+
+    /// Checks if the payment is in a terminal state
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self.status,
+            PaymentStatus::Completed | PaymentStatus::Refunded | PaymentStatus::Cancelled
+        )
+    }
+}
+
+impl EscrowAccount {
+    /// Validates escrow account structure
+    pub fn validate(&self) -> Result<(), PaymentError> {
+        if self.locked_amount <= 0 {
+            return Err(PaymentError::InvalidAmount);
+        }
+        Ok(())
+    }
+
+    /// Checks if release conditions are satisfied
+    pub fn can_release(&self, current_timestamp: u64, approver: Option<&Address>) -> bool {
+        // Check timestamp condition
+        if current_timestamp < self.release_conditions.min_timestamp {
+            return false;
+        }
+
+        // Check medical records verification
+        if !self.release_conditions.medical_records_verified {
+            return false;
+        }
+
+        // Check approver if required
+        if let Some(required_approver) = &self.release_conditions.authorized_approver {
+            if let Some(provided_approver) = approver {
+                if required_approver != provided_approver {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+
+        true
+    }
+}
+
+impl FeeStructure {
+    /// Calculates total fees
+    pub fn total(&self) -> i128 {
+        self.service_fee + self.network_fee + self.performance_bonus
+    }
+
+    /// Validates fee structure
+    pub fn validate(&self) -> Result<(), PaymentError> {
+        if self.service_fee < 0 || self.network_fee < 0 || self.performance_bonus < 0 {
+            return Err(PaymentError::InvalidFee);
+        }
+        Ok(())
+    }
+
+    /// Calculates net amount after deducting fees
+    pub fn calculate_net_amount(&self, gross_amount: i128) -> Result<i128, PaymentError> {
+        let total_fees = self.total();
+        if total_fees > gross_amount {
+            return Err(PaymentError::FeesExceedAmount);
+        }
+        Ok(gross_amount - total_fees)
+    }
+}
+
+/// Error types for payment operations
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaymentError {
+    InvalidAmount,
+    SamePayerPayee,
+    InvalidFee,
+    InvalidAsset,
+    FeesExceedAmount,
+    InvalidTransition,
+    EscrowNotReleasable,
+}
