@@ -9,6 +9,7 @@ import {
   Query,
   HttpCode,
   HttpStatus,
+  Request,
 } from '@nestjs/common';
 import { OrdersService } from './orders.service';
 
@@ -29,14 +30,25 @@ export class OrdersController {
     return this.ordersService.findOne(id);
   }
 
+  /**
+   * GET /orders/:id/history
+   * Returns the full, chronologically-ordered event log for an order.
+   * Each row contains: order_id, event_type, payload, actor_id, timestamp.
+   */
+  @Get(':id/history')
+  getOrderHistory(@Param('id') id: string) {
+    return this.ordersService.getOrderHistory(id);
+  }
+
   @Get(':id/track')
   trackOrder(@Param('id') id: string) {
     return this.ordersService.trackOrder(id);
   }
 
   @Post()
-  create(@Body() createOrderDto: any) {
-    return this.ordersService.create(createOrderDto);
+  create(@Body() createOrderDto: any, @Request() req: any) {
+    const actorId: string | undefined = req.user?.id;
+    return this.ordersService.create(createOrderDto, actorId);
   }
 
   @Patch(':id')
@@ -45,21 +57,29 @@ export class OrdersController {
   }
 
   @Patch(':id/status')
-  updateStatus(@Param('id') id: string, @Body('status') status: string) {
-    return this.ordersService.updateStatus(id, status);
+  updateStatus(
+    @Param('id') id: string,
+    @Body('status') status: string,
+    @Request() req: any,
+  ) {
+    const actorId: string | undefined = req.user?.id;
+    return this.ordersService.updateStatus(id, status, actorId);
   }
 
   @Patch(':id/assign-rider')
   assignRider(
     @Param('id') id: string,
     @Body('riderId') riderId: string,
+    @Request() req: any,
   ) {
-    return this.ordersService.assignRider(id, riderId);
+    const actorId: string | undefined = req.user?.id;
+    return this.ordersService.assignRider(id, riderId, actorId);
   }
 
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
-  remove(@Param('id') id: string) {
-    return this.ordersService.remove(id);
+  remove(@Param('id') id: string, @Request() req: any) {
+    const actorId: string | undefined = req.user?.id;
+    return this.ordersService.remove(id, actorId);
   }
 }
