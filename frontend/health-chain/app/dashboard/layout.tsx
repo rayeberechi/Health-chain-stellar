@@ -13,8 +13,6 @@ import {
   LogOut, 
   Menu,
   X,
-  Bell,
-  Package
 } from "lucide-react";
 
 function classNames(...classes: (string | undefined | null | false)[]) {
