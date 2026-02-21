@@ -1,23 +1,25 @@
-'use client';
+"use client";
 
 // OrdersPage - Main page component for Hospital Order History Dashboard
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { AlertCircle, RefreshCw } from 'lucide-react';
-import { Order, OrderFilters, SortConfig, PaginationConfig, OrdersResponse } from '@/lib/types/orders';
-import { URLStateManager } from '@/lib/utils/url-state-manager';
-import { WebSocketClient } from '@/lib/utils/websocket-client';
-import { CSVExporter } from '@/lib/utils/csv-exporter';
-import { FilterPanel } from '@/components/orders/FilterPanel';
-import { OrderTable } from '@/components/orders/OrderTable';
-import { PaginationController } from '@/components/orders/PaginationController';
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { AlertCircle, RefreshCw } from "lucide-react";
+import {
+  Order,
+  OrderFilters,
+  SortConfig,
+  PaginationConfig,
+  OrdersResponse,
+} from "@/lib/types/orders";
+import { URLStateManager } from "@/lib/utils/url-state-manager";
+import { WebSocketClient, ConnectionStatus } from "@/lib/utils/websocket-client";
+import { CSVExporter } from "@/lib/utils/csv-exporter";
+import { FilterPanel } from "@/components/orders/FilterPanel";
+import { OrderTable } from "@/components/orders/OrderTable";
+import { PaginationController } from "@/components/orders/PaginationController";
+import { ConnectionStatusIndicator } from "@/components/orders/ConnectionStatusIndicator";
 
-/**
- * OrdersPage Component
- * Main dashboard page for viewing and managing hospital orders
- */
 export default function OrdersPage() {
-  // State management
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -26,23 +28,25 @@ export default function OrdersPage() {
     endDate: null,
     bloodTypes: [],
     statuses: [],
-    bloodBank: '',
+    bloodBank: "",
   });
   const [sort, setSort] = useState<SortConfig>({
-    column: 'placedAt',
-    order: 'desc',
+    column: "placedAt",
+    order: "desc",
   });
   const [pagination, setPagination] = useState<PaginationConfig>({
     page: 1,
     pageSize: 25,
   });
   const [totalCount, setTotalCount] = useState(0);
-  const [wsConnected, setWsConnected] = useState(false);
+  const [wsStatus, setWsStatus] = useState<ConnectionStatus>("disconnected");
 
-  // WebSocket client ref
   const wsClientRef = useRef<WebSocketClient | null>(null);
 
-  // Initialize state from URL on mount
+  // Track whether we are currently in a reconnecting/disconnected state
+  // so StatusBadge can show stale styling
+  const isStale = wsStatus === "reconnecting" || wsStatus === "disconnected";
+
   useEffect(() => {
     const urlState = URLStateManager.readFromURL();
     setFilters(urlState.filters);
@@ -53,228 +57,178 @@ export default function OrdersPage() {
     });
   }, []);
 
-  // Fetch orders from API
-  const fetchOrders = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError(null);
-
-      // Build query parameters
-      const params = new URLSearchParams();
-      
-      // TODO: Replace with actual hospital ID from auth context
-      params.set('hospitalId', 'HOSP-001');
-
-      // Date filters
-      if (filters.startDate) {
-        params.set('startDate', filters.startDate.toISOString().split('T')[0]);
-      }
-      if (filters.endDate) {
-        params.set('endDate', filters.endDate.toISOString().split('T')[0]);
-      }
-
-      // Blood types filter
-      if (filters.bloodTypes.length > 0) {
-        params.set('bloodTypes', filters.bloodTypes.join(','));
-      }
-
-      // Statuses filter
-      if (filters.statuses.length > 0) {
-        params.set('statuses', filters.statuses.join(','));
-      }
-
-      // Blood bank filter
-      if (filters.bloodBank) {
-        params.set('bloodBank', filters.bloodBank);
-      }
-
-      // Sort parameters
-      params.set('sortBy', sort.column);
-      params.set('sortOrder', sort.order);
-
-      // Pagination parameters
-      params.set('page', pagination.page.toString());
-      params.set('pageSize', pagination.pageSize.toString());
-
-      // Make API request
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
-      const apiPrefix = process.env.NEXT_PUBLIC_API_PREFIX || 'api/v1';
-      const fullUrl = `${apiUrl}/${apiPrefix}/orders?${params.toString()}`;
-      
-      console.log('Fetching orders from:', fullUrl);
-      console.log('Environment variables:', { apiUrl, apiPrefix });
-      
-      const response = await fetch(fullUrl);
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          throw new Error('Session expired. Please log in again.');
+  const fetchOrders = useCallback(
+    async (silent = false) => {
+      try {
+        if (!silent) {
+          setLoading(true);
         }
-        if (response.status === 403) {
-          throw new Error('You do not have access to this hospital.');
+        setError(null);
+
+        const params = new URLSearchParams();
+        params.set("hospitalId", "HOSP-001");
+
+        if (filters.startDate) {
+          params.set("startDate", filters.startDate.toISOString().split("T")[0]);
         }
-        if (response.status === 404) {
-          throw new Error('Orders API endpoint not found. Please ensure the backend server is running on http://localhost:3000');
+        if (filters.endDate) {
+          params.set("endDate", filters.endDate.toISOString().split("T")[0]);
         }
-        
-        // Try to get error details from response
-        let errorMessage = 'Failed to fetch orders. Please try again.';
-        try {
-          const errorData = await response.json();
-          if (errorData.message) {
-            errorMessage = `API Error: ${errorData.message}`;
-          }
-        } catch {
-          // If we can't parse the error, use the default message
-          errorMessage = `API Error (${response.status}): ${response.statusText}. Please ensure the backend server is running.`;
+        if (filters.bloodTypes.length > 0) {
+          filters.bloodTypes.forEach((bt) => params.append("bloodType", bt));
         }
-        
-        throw new Error(errorMessage);
+        if (filters.statuses.length > 0) {
+          filters.statuses.forEach((s) => params.append("status", s));
+        }
+        if (filters.bloodBank) {
+          params.set("bloodBank", filters.bloodBank);
+        }
+
+        params.set("sortBy", sort.column);
+        params.set("sortOrder", sort.order);
+        params.set("page", pagination.page.toString());
+        params.set("pageSize", pagination.pageSize.toString());
+
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000";
+        const apiPrefix = process.env.NEXT_PUBLIC_API_PREFIX || "api/v1";
+        const response = await fetch(
+          `${apiUrl}/${apiPrefix}/orders?${params.toString()}`,
+        );
+
+        if (!response.ok) {
+          throw new Error(`HTTP error ${response.status}`);
+        }
+
+        const data: OrdersResponse = await response.json();
+
+        const ordersWithDates = data.orders.map((order) => ({
+          ...order,
+          placedAt: new Date(order.placedAt),
+          deliveredAt: order.deliveredAt ? new Date(order.deliveredAt) : null,
+          confirmedAt: order.confirmedAt ? new Date(order.confirmedAt) : null,
+          cancelledAt: order.cancelledAt ? new Date(order.cancelledAt) : null,
+          createdAt: new Date(order.createdAt),
+          updatedAt: new Date(order.updatedAt),
+        }));
+
+        setOrders(ordersWithDates);
+        setTotalCount(data.pagination.totalCount);
+      } catch (err) {
+        console.error("Error fetching orders:", err);
+        setError(err instanceof Error ? err.message : "An unexpected error occurred");
+      } finally {
+        setLoading(false);
       }
+    },
+    [filters, sort, pagination],
+  );
 
-      const data: OrdersResponse = await response.json();
-      
-      // Convert date strings to Date objects
-      const ordersWithDates = data.data.map((order) => ({
-        ...order,
-        placedAt: new Date(order.placedAt),
-        deliveredAt: order.deliveredAt ? new Date(order.deliveredAt) : null,
-        confirmedAt: order.confirmedAt ? new Date(order.confirmedAt) : null,
-        cancelledAt: order.cancelledAt ? new Date(order.cancelledAt) : null,
-        createdAt: new Date(order.createdAt),
-        updatedAt: new Date(order.updatedAt),
-      }));
-
-      setOrders(ordersWithDates);
-      setTotalCount(data.pagination.totalCount);
-    } catch (err) {
-      console.error('Error fetching orders:', err);
-      console.error('Error details:', {
-        message: err instanceof Error ? err.message : 'Unknown error',
-        stack: err instanceof Error ? err.stack : undefined,
-        type: err instanceof TypeError ? 'Network/CORS error' : 'Other error'
-      });
-      setError(err instanceof Error ? err.message : 'An unexpected error occurred');
-    } finally {
-      setLoading(false);
-    }
-  }, [filters, sort, pagination]);
-
-  // Fetch orders when dependencies change
   useEffect(() => {
     fetchOrders();
   }, [fetchOrders]);
 
-  // Set up WebSocket connection
+  // WebSocket setup
   useEffect(() => {
-    // TODO: Replace with actual hospital ID from auth context
-    const hospitalId = 'HOSP-001';
-    
+    const hospitalId = "HOSP-001";
     const wsClient = new WebSocketClient(hospitalId);
     wsClientRef.current = wsClient;
 
-    // Connect to WebSocket
-    wsClient
-      .connect()
-      .then(() => {
-        console.log('WebSocket connected successfully');
-      })
-      .catch((err) => {
-        console.error('WebSocket connection failed:', err);
-      });
-
-    // Register connection status callback
-    wsClient.onConnectionChange((connected) => {
-      setWsConnected(connected);
+    wsClient.onConnectionChange((status) => {
+      setWsStatus(status);
     });
 
-    // Register order update callback
+    // After a successful reconnect, silently re-fetch to reconcile
+    // React Query cache / local state with the current server state
+    wsClient.onReconnected(() => {
+      console.log("WebSocket reconnected — reconciling order data via REST");
+      fetchOrders(true);
+    });
+
     wsClient.onOrderUpdate((updatedOrder) => {
-      setOrders((prevOrders) => {
-        return prevOrders.map((order) =>
+      setOrders((prevOrders) =>
+        prevOrders.map((order) =>
           order.id === updatedOrder.id
             ? {
                 ...order,
                 ...updatedOrder,
                 updatedAt: updatedOrder.updatedAt
-                  ? new Date(updatedOrder.updatedAt)
+                  ? new Date(updatedOrder.updatedAt as unknown as string)
                   : order.updatedAt,
                 deliveredAt: updatedOrder.deliveredAt
-                  ? new Date(updatedOrder.deliveredAt)
+                  ? new Date(updatedOrder.deliveredAt as unknown as string)
                   : order.deliveredAt,
               }
-            : order
-        );
-      });
+            : order,
+        ),
+      );
     });
 
-    // Cleanup on unmount
+    wsClient.connect().catch((err) => {
+      console.error("WebSocket connection failed:", err);
+    });
+
     return () => {
       wsClient.disconnect();
     };
+    // fetchOrders intentionally excluded — we only want this to run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Handle filter changes
   const handleFiltersChange = useCallback(
     (newFilters: OrderFilters) => {
       setFilters(newFilters);
-      setPagination((prev) => ({ ...prev, page: 1 })); // Reset to page 1
-      URLStateManager.updateURL(newFilters, sort, { ...pagination, page: 1 });
+      URLStateManager.updateURL(newFilters, sort, pagination);
     },
-    [sort, pagination]
+    [sort, pagination],
   );
 
-  // Handle clear filters
   const handleClearFilters = useCallback(() => {
-    const defaultFilters: OrderFilters = {
+    const cleared: OrderFilters = {
       startDate: null,
       endDate: null,
       bloodTypes: [],
       statuses: [],
-      bloodBank: '',
+      bloodBank: "",
     };
-    setFilters(defaultFilters);
-    setPagination((prev) => ({ ...prev, page: 1 }));
-    URLStateManager.updateURL(defaultFilters, sort, { ...pagination, page: 1 });
+    setFilters(cleared);
+    URLStateManager.updateURL(cleared, sort, pagination);
   }, [sort, pagination]);
 
-  // Handle sort changes
   const handleSortChange = useCallback(
     (column: string) => {
       const newSort: SortConfig = {
         column,
-        order: sort.column === column && sort.order === 'asc' ? 'desc' : 'asc',
+        order: sort.column === column && sort.order === "asc" ? "desc" : "asc",
       };
       setSort(newSort);
       URLStateManager.updateURL(filters, newSort, pagination);
     },
-    [filters, sort, pagination]
+    [filters, sort, pagination],
   );
 
-  // Handle page change
   const handlePageChange = useCallback(
     (page: number) => {
       setPagination((prev) => ({ ...prev, page }));
       URLStateManager.updateURL(filters, sort, { ...pagination, page });
     },
-    [filters, sort, pagination]
+    [filters, sort, pagination],
   );
 
-  // Handle page size change
   const handlePageSizeChange = useCallback(
     (pageSize: number) => {
       setPagination({ page: 1, pageSize: pageSize as 25 | 50 | 100 });
-      URLStateManager.updateURL(filters, sort, { page: 1, pageSize: pageSize as 25 | 50 | 100 });
+      URLStateManager.updateURL(filters, sort, {
+        page: 1,
+        pageSize: pageSize as 25 | 50 | 100,
+      });
     },
-    [filters, sort]
+    [filters, sort],
   );
 
-  // Handle CSV export
   const handleExport = useCallback(() => {
     CSVExporter.export(orders);
   }, [orders]);
 
-  // Handle retry
   const handleRetry = useCallback(() => {
     fetchOrders();
   }, [fetchOrders]);
@@ -282,22 +236,18 @@ export default function OrdersPage() {
   return (
     <div className="max-w-[1600px] mx-auto">
       {/* Page Header */}
-      <div className="mb-6">
-        <h1 className="text-3xl font-bold text-gray-900">Order History</h1>
-        <p className="text-gray-600 mt-2">
-          View and manage your hospital&apos;s blood order history
-        </p>
-      </div>
-
-      {/* WebSocket Connection Warning */}
-      {!wsConnected && !loading && (
-        <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg flex items-center gap-2">
-          <AlertCircle className="w-5 h-5 text-yellow-600 flex-shrink-0" />
-          <span className="text-sm text-yellow-800">
-            Real-time updates are currently unavailable. The page will still function normally.
-          </span>
+      <div className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900">Order History</h1>
+          <p className="text-gray-600 mt-2">
+            View and manage your hospital&apos;s blood order history
+          </p>
         </div>
-      )}
+        {/* Connection status indicator — always visible in the header */}
+        <div className="pt-1">
+          <ConnectionStatusIndicator status={wsStatus} />
+        </div>
+      </div>
 
       {/* Error Display */}
       {error && (
@@ -319,7 +269,6 @@ export default function OrdersPage() {
         </div>
       )}
 
-      {/* Filter Panel */}
       <FilterPanel
         filters={filters}
         onFiltersChange={handleFiltersChange}
@@ -327,7 +276,7 @@ export default function OrdersPage() {
         onExport={handleExport}
       />
 
-      {/* Order Table */}
+      {/* Pass isStale down to OrderTable so StatusBadge can dim during reconnect */}
       <OrderTable
         orders={orders}
         sort={sort}
@@ -335,14 +284,14 @@ export default function OrdersPage() {
         loading={loading}
         emptyMessage="No orders found"
         onClearFilters={handleClearFilters}
+        isStale={isStale}
       />
 
-      {/* Pagination */}
       {!loading && orders.length > 0 && (
         <PaginationController
           currentPage={pagination.page}
-          pageSize={pagination.pageSize}
           totalCount={totalCount}
+          pageSize={pagination.pageSize}
           onPageChange={handlePageChange}
           onPageSizeChange={handlePageSizeChange}
         />

@@ -1,196 +1,173 @@
 // WebSocketClient - Manages WebSocket connections for real-time order updates
 
-import { io, Socket } from 'socket.io-client';
-import { Order } from '../types/orders';
+import { io, Socket } from "socket.io-client";
+import { Order } from "../types/orders";
+
+export type ConnectionStatus = "connected" | "reconnecting" | "disconnected";
 
 export class WebSocketClient {
   private socket: Socket | null = null;
   private hospitalId: string;
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 5;
-  private baseReconnectDelay = 1000; // 1 second
+  private maxReconnectAttempts = 10;
+  private baseReconnectDelay = 1000;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private onOrderUpdateCallback?: (order: Partial<Order>) => void;
-  private onConnectionChangeCallback?: (connected: boolean) => void;
+  private onConnectionChangeCallback?: (status: ConnectionStatus) => void;
+  private onReconnectedCallback?: () => void;
 
   constructor(hospitalId: string) {
     this.hospitalId = hospitalId;
   }
 
-  /**
-   * Connect to WebSocket server
-   * Establishes connection with authentication and joins hospital room
-   */
   async connect(authToken?: string): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
-        // Determine WebSocket URL (use environment variable or default)
-        const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:3000';
+        const wsUrl = process.env.NEXT_PUBLIC_WS_URL || "http://localhost:3000";
 
-        // Create socket connection
         this.socket = io(`${wsUrl}/orders`, {
           auth: authToken ? { token: authToken } : undefined,
-          reconnection: true,
-          reconnectionDelay: this.baseReconnectDelay,
-          reconnectionAttempts: this.maxReconnectAttempts,
-          transports: ['websocket', 'polling'],
+          // Disable socket.io built-in reconnection — we handle it manually
+          // so we can emit the 'reconnecting' status with backoff control
+          reconnection: false,
+          transports: ["websocket", "polling"],
         });
 
-        // Connection established
-        this.socket.on('connect', () => {
-          console.log('WebSocket connected');
+        this.socket.on("connect", () => {
+          const wasReconnecting = this.reconnectAttempts > 0;
           this.reconnectAttempts = 0;
 
-          // Join hospital room
           if (this.socket) {
-            this.socket.emit('join:hospital', { hospitalId: this.hospitalId });
+            this.socket.emit("join:hospital", { hospitalId: this.hospitalId });
           }
 
-          // Notify connection change
           if (this.onConnectionChangeCallback) {
-            this.onConnectionChangeCallback(true);
+            this.onConnectionChangeCallback("connected");
+          }
+
+          // If this was a reconnect (not the initial connect), fire the reconcile callback
+          if (wasReconnecting && this.onReconnectedCallback) {
+            this.onReconnectedCallback();
           }
 
           resolve();
         });
 
-        // Connection error
-        this.socket.on('connect_error', (error) => {
-          console.error('WebSocket connection error:', error);
-          this.reconnectAttempts++;
+        this.socket.on("connect_error", (error) => {
+          console.error("WebSocket connection error:", error);
 
-          // Notify connection change
-          if (this.onConnectionChangeCallback) {
-            this.onConnectionChangeCallback(false);
+          if (this.reconnectAttempts === 0) {
+            // First connection failed — still resolve so the page loads,
+            // and start backoff reconnection
+            resolve();
           }
 
-          // If max attempts reached, reject
-          if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-            reject(new Error('Failed to connect to WebSocket server'));
+          if (this.onConnectionChangeCallback) {
+            this.onConnectionChangeCallback("disconnected");
+          }
+
+          this.scheduleReconnect(authToken);
+        });
+
+        this.socket.on("disconnect", (reason) => {
+          console.log("WebSocket disconnected:", reason);
+
+          if (this.onConnectionChangeCallback) {
+            this.onConnectionChangeCallback("reconnecting");
+          }
+
+          // Server-initiated disconnect: manual reconnect required
+          if (reason === "io server disconnect") {
+            this.scheduleReconnect(authToken);
+          } else {
+            // Network drop: start reconnect loop
+            this.scheduleReconnect(authToken);
           }
         });
 
-        // Disconnection
-        this.socket.on('disconnect', (reason) => {
-          console.log('WebSocket disconnected:', reason);
-
-          // Notify connection change
-          if (this.onConnectionChangeCallback) {
-            this.onConnectionChangeCallback(false);
-          }
-
-          // Implement exponential backoff for reconnection
-          if (reason === 'io server disconnect') {
-            // Server disconnected, manually reconnect
-            this.reconnectWithBackoff();
-          }
-        });
-
-        // Listen for order updates
-        this.socket.on('order:updated', (update: Partial<Order>) => {
-          console.log('Order update received:', update);
-
-          // Call registered callback
+        this.socket.on("order:updated", (update: Partial<Order>) => {
           if (this.onOrderUpdateCallback) {
             this.onOrderUpdateCallback(update);
           }
         });
 
-        // Reconnection attempt
-        this.socket.on('reconnect_attempt', (attemptNumber) => {
-          console.log(`WebSocket reconnection attempt ${attemptNumber}`);
-        });
-
-        // Reconnection success
-        this.socket.on('reconnect', (attemptNumber) => {
-          console.log(`WebSocket reconnected after ${attemptNumber} attempts`);
-          this.reconnectAttempts = 0;
-
-          // Rejoin hospital room
-          if (this.socket) {
-            this.socket.emit('join:hospital', { hospitalId: this.hospitalId });
-          }
-
-          // Notify connection change
-          if (this.onConnectionChangeCallback) {
-            this.onConnectionChangeCallback(true);
-          }
-        });
-
-        // Reconnection failed
-        this.socket.on('reconnect_failed', () => {
-          console.error('WebSocket reconnection failed');
-
-          // Notify connection change
-          if (this.onConnectionChangeCallback) {
-            this.onConnectionChangeCallback(false);
+        // Also listen for the gateway event name used in orders.gateway.ts
+        this.socket.on("order.status.updated", (update: Partial<Order>) => {
+          if (this.onOrderUpdateCallback) {
+            this.onOrderUpdateCallback(update);
           }
         });
       } catch (error) {
-        console.error('Error creating WebSocket connection:', error);
+        console.error("Error creating WebSocket connection:", error);
         reject(error);
       }
     });
   }
 
-  /**
-   * Reconnect with exponential backoff
-   * Implements exponential backoff strategy for reconnection
-   */
-  private reconnectWithBackoff(): void {
+  private scheduleReconnect(authToken?: string): void {
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error('Max reconnection attempts reached');
+      console.error("Max reconnection attempts reached");
+      if (this.onConnectionChangeCallback) {
+        this.onConnectionChangeCallback("disconnected");
+      }
       return;
     }
 
-    const delay = this.baseReconnectDelay * Math.pow(2, this.reconnectAttempts);
-    console.log(`Reconnecting in ${delay}ms...`);
+    // Exponential backoff: 1s, 2s, 4s, 8s … capped at 30s
+    const delay = Math.min(
+      this.baseReconnectDelay * Math.pow(2, this.reconnectAttempts),
+      30000,
+    );
 
-    setTimeout(() => {
+    console.log(
+      `Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts + 1}/${this.maxReconnectAttempts})…`,
+    );
+
+    if (this.onConnectionChangeCallback) {
+      this.onConnectionChangeCallback("reconnecting");
+    }
+
+    this.reconnectTimer = setTimeout(() => {
       this.reconnectAttempts++;
       if (this.socket) {
         this.socket.connect();
+      } else {
+        this.connect(authToken).catch(console.error);
       }
     }, delay);
   }
 
-  /**
-   * Disconnect from WebSocket server
-   * Closes connection and cleans up resources
-   */
   disconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.socket) {
-      console.log('Disconnecting WebSocket');
       this.socket.disconnect();
       this.socket = null;
     }
-
-    // Clear callbacks
     this.onOrderUpdateCallback = undefined;
     this.onConnectionChangeCallback = undefined;
-
-    // Reset reconnection attempts
+    this.onReconnectedCallback = undefined;
     this.reconnectAttempts = 0;
   }
 
-  /**
-   * Register callback for order updates
-   * Called when an order status update is received
-   */
   onOrderUpdate(callback: (order: Partial<Order>) => void): void {
     this.onOrderUpdateCallback = callback;
   }
 
-  /**
-   * Register callback for connection status changes
-   * Called when connection is established or lost
-   */
-  onConnectionChange(callback: (connected: boolean) => void): void {
+  onConnectionChange(callback: (status: ConnectionStatus) => void): void {
     this.onConnectionChangeCallback = callback;
   }
 
   /**
-   * Check if socket is connected
+   * Called once after a successful reconnect so the page can
+   * trigger a REST fetch to reconcile stale data.
    */
+  onReconnected(callback: () => void): void {
+    this.onReconnectedCallback = callback;
+  }
+
   isConnected(): boolean {
     return this.socket?.connected ?? false;
   }
