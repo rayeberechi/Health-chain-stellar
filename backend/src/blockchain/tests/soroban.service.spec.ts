@@ -1,0 +1,366 @@
+/// <reference types="jest" />
+import { Test, TestingModule } from '@nestjs/testing';
+import { getQueueToken } from '@nestjs/bull';
+import { SorobanService } from '../services/soroban.service';
+import { IdempotencyService } from '../services/idempotency.service';
+import { SorobanTxJob } from '../types/soroban-tx.types';
+
+describe('SorobanService', () => {
+  let service: SorobanService;
+  let mockTxQueue: any;
+  let mockDlq: any;
+  let mockIdempotencyService: any;
+
+  beforeEach(async () => {
+    mockTxQueue = {
+      add: jest.fn().mockResolvedValue({ id: 'job-123' }),
+      count: jest.fn().mockResolvedValue(5),
+      getFailedCount: jest.fn().mockResolvedValue(2),
+      getJob: jest.fn(),
+    };
+
+    mockDlq = {
+      count: jest.fn().mockResolvedValue(1),
+    };
+
+    mockIdempotencyService = {
+      checkAndSetIdempotencyKey: jest.fn().mockResolvedValue(true),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        SorobanService,
+        {
+          provide: getQueueToken('soroban-tx-queue'),
+          useValue: mockTxQueue,
+        },
+        {
+          provide: getQueueToken('soroban-dlq'),
+          useValue: mockDlq,
+        },
+        {
+          provide: IdempotencyService,
+          useValue: mockIdempotencyService,
+        },
+      ],
+    }).compile();
+
+    service = module.get<SorobanService>(SorobanService);
+  });
+
+  describe('submitTransaction', () => {
+    it('should submit a transaction and return job ID', async () => {
+      const job: SorobanTxJob = {
+        contractMethod: 'register_blood',
+        args: ['bank-123', 'O+', 100],
+        idempotencyKey: 'idempotency-key-1',
+        maxRetries: 5,
+      };
+
+      const jobId = await service.submitTransaction(job);
+
+      expect(jobId).toBe('job-123');
+      expect(mockTxQueue.add).toHaveBeenCalledWith(job, expect.any(Object));
+    });
+
+    it('should reject duplicate submissions', async () => {
+      mockIdempotencyService.checkAndSetIdempotencyKey.mockResolvedValueOnce(false);
+
+      const job: SorobanTxJob = {
+        contractMethod: 'register_blood',
+        args: [],
+        idempotencyKey: 'duplicate-key',
+      };
+
+      await expect(service.submitTransaction(job)).rejects.toThrow(
+        'Duplicate submission',
+      );
+    });
+
+    it('should use default maxRetries if not provided', async () => {
+      const job: SorobanTxJob = {
+        contractMethod: 'test',
+        args: [],
+        idempotencyKey: 'key-1',
+      };
+
+      await service.submitTransaction(job);
+
+      expect(mockTxQueue.add).toHaveBeenCalledWith(
+        job,
+        expect.objectContaining({
+          attempts: 5, // default
+        }),
+      );
+    });
+
+    it('should use custom maxRetries when provided', async () => {
+      const job: SorobanTxJob = {
+        contractMethod: 'test',
+        args: [],
+        idempotencyKey: 'key-2',
+        maxRetries: 10,
+      };
+
+      await service.submitTransaction(job);
+
+      expect(mockTxQueue.add).toHaveBeenCalledWith(
+        job,
+        expect.objectContaining({
+          attempts: 10,
+        }),
+      );
+    });
+
+    it('should configure exponential backoff', async () => {
+      const job: SorobanTxJob = {
+        contractMethod: 'test',
+        args: [],
+        idempotencyKey: 'key-3',
+      };
+
+      await service.submitTransaction(job);
+
+      expect(mockTxQueue.add).toHaveBeenCalledWith(
+        job,
+        expect.objectContaining({
+          backoff: {
+            type: 'exponential',
+            delay: 1000,
+          },
+        }),
+      );
+    });
+
+    it('should prevent duplicate submissions with concurrent requests', async () => {
+      const idempotencyKey = 'concurrent-test-key';
+      const job: SorobanTxJob = {
+        contractMethod: 'register_blood',
+        args: ['bank-123', 'O+', 100],
+        idempotencyKey,
+      };
+
+      // First call succeeds
+      mockIdempotencyService.checkAndSetIdempotencyKey.mockResolvedValueOnce(true);
+      // Second call fails (duplicate)
+      mockIdempotencyService.checkAndSetIdempotencyKey.mockResolvedValueOnce(false);
+
+      const result1 = await service.submitTransaction(job);
+      expect(result1).toBe('job-123');
+
+      await expect(service.submitTransaction(job)).rejects.toThrow(
+        'Duplicate submission',
+      );
+    });
+  });
+
+  describe('getQueueMetrics', () => {
+    it('should return accurate queue metrics', async () => {
+      const metrics = await service.getQueueMetrics();
+
+      expect(metrics).toEqual({
+        queueDepth: 5,
+        failedJobs: 2,
+        dlqCount: 1,
+        processingRate: 0,
+      });
+    });
+
+    it('should call all queue methods to get metrics', async () => {
+      await service.getQueueMetrics();
+
+      expect(mockTxQueue.count).toHaveBeenCalled();
+      expect(mockTxQueue.getFailedCount).toHaveBeenCalled();
+      expect(mockDlq.count).toHaveBeenCalled();
+    });
+  });
+
+  describe('getJobStatus', () => {
+    it('should return job status when job exists', async () => {
+      const mockJob = {
+        id: 'job-123',
+        data: { transactionHash: 'tx_abc123' },
+        getState: jest.fn().mockResolvedValue('completed'),
+        failedReason: null,
+        attemptsMade: 0,
+        timestamp: Date.now(),
+        finishedOn: Date.now() + 5000,
+      };
+
+      mockTxQueue.getJob.mockResolvedValueOnce(mockJob);
+
+      const status = await service.getJobStatus('job-123');
+
+      expect(status).toEqual({
+        jobId: 'job-123',
+        transactionHash: 'tx_abc123',
+        status: 'completed',
+        error: null,
+        retryCount: 0,
+        createdAt: expect.any(Date),
+        completedAt: expect.any(Date),
+      });
+    });
+
+    it('should return null when job does not exist', async () => {
+      mockTxQueue.getJob.mockResolvedValueOnce(null);
+
+      const status = await service.getJobStatus('non-existent-job');
+
+      expect(status).toBeNull();
+    });
+
+    it('should handle failed job status', async () => {
+      const mockJob = {
+        id: 'job-456',
+        data: {},
+        getState: jest.fn().mockResolvedValue('failed'),
+        failedReason: 'RPC timeout',
+        attemptsMade: 3,
+        timestamp: Date.now(),
+        finishedOn: null,
+      };
+
+      mockTxQueue.getJob.mockResolvedValueOnce(mockJob);
+
+      const status = await service.getJobStatus('job-456');
+
+      expect(status).not.toBeNull();
+      expect(status!.status).toBe('failed');
+      expect(status!.error).toBe('RPC timeout');
+      expect(status!.retryCount).toBe(3);
+    });
+  });
+
+  describe('calculateBackoffDelay', () => {
+    it('should calculate exponential backoff with jitter for attempt 1', () => {
+      const delay = service.calculateBackoffDelay(1);
+      expect(delay).toBeGreaterThanOrEqual(1000);
+      expect(delay).toBeLessThanOrEqual(1100);
+    });
+
+    it('should calculate exponential backoff with jitter for attempt 2', () => {
+      const delay = service.calculateBackoffDelay(2);
+      expect(delay).toBeGreaterThanOrEqual(2000);
+      expect(delay).toBeLessThanOrEqual(2200);
+    });
+
+    it('should calculate exponential backoff with jitter for attempt 3', () => {
+      const delay = service.calculateBackoffDelay(3);
+      expect(delay).toBeGreaterThanOrEqual(4000);
+      expect(delay).toBeLessThanOrEqual(4400);
+    });
+
+    it('should calculate exponential backoff with jitter for attempt 4', () => {
+      const delay = service.calculateBackoffDelay(4);
+      expect(delay).toBeGreaterThanOrEqual(8000);
+      expect(delay).toBeLessThanOrEqual(8800);
+    });
+
+    it('should calculate exponential backoff with jitter for attempt 5', () => {
+      const delay = service.calculateBackoffDelay(5);
+      expect(delay).toBeGreaterThanOrEqual(16000);
+      expect(delay).toBeLessThanOrEqual(17600);
+    });
+
+    it('should cap delay at max value (60 seconds)', () => {
+      const delay = service.calculateBackoffDelay(10);
+      expect(delay).toBeLessThanOrEqual(60000);
+    });
+
+    it('should include jitter in backoff calculation', () => {
+      // Run multiple times to verify jitter is applied
+      const delays = Array.from({ length: 10 }, () =>
+        service.calculateBackoffDelay(2),
+      );
+
+      // All delays should be in range
+      delays.forEach((delay) => {
+        expect(delay).toBeGreaterThanOrEqual(2000);
+        expect(delay).toBeLessThanOrEqual(2200);
+      });
+
+      // Not all delays should be identical (jitter is working)
+      const uniqueDelays = new Set(delays);
+      expect(uniqueDelays.size).toBeGreaterThan(1);
+    });
+  });
+
+  describe('Acceptance Criteria', () => {
+    it('should ensure all SorobanService calls go through BullMQ queue', async () => {
+      const job: SorobanTxJob = {
+        contractMethod: 'register_blood',
+        args: ['bank-123', 'O+', 100],
+        idempotencyKey: 'acceptance-test-1',
+      };
+
+      await service.submitTransaction(job);
+
+      // Verify queue.add was called (no direct synchronous calls)
+      expect(mockTxQueue.add).toHaveBeenCalled();
+    });
+
+    it('should implement exponential backoff with configurable base and max delay', async () => {
+      // Verify backoff configuration
+      const job: SorobanTxJob = {
+        contractMethod: 'test',
+        args: [],
+        idempotencyKey: 'backoff-test',
+      };
+
+      await service.submitTransaction(job);
+
+      expect(mockTxQueue.add).toHaveBeenCalledWith(
+        job,
+        expect.objectContaining({
+          backoff: {
+            type: 'exponential',
+            delay: 1000, // BASE_DELAY
+          },
+        }),
+      );
+
+      // Verify max delay is enforced
+      const maxDelay = service.calculateBackoffDelay(100);
+      expect(maxDelay).toBeLessThanOrEqual(60000); // MAX_DELAY
+    });
+
+    it('should prevent duplicate submissions with idempotency key', async () => {
+      const idempotencyKey = 'unique-key-acceptance';
+      const job: SorobanTxJob = {
+        contractMethod: 'register_blood',
+        args: ['bank-123', 'O+', 100],
+        idempotencyKey,
+      };
+
+      // First submission succeeds
+      mockIdempotencyService.checkAndSetIdempotencyKey.mockResolvedValueOnce(true);
+      const jobId1 = await service.submitTransaction(job);
+      expect(jobId1).toBe('job-123');
+
+      // Duplicate submission fails
+      mockIdempotencyService.checkAndSetIdempotencyKey.mockResolvedValueOnce(false);
+      await expect(service.submitTransaction(job)).rejects.toThrow(
+        'Duplicate submission',
+      );
+
+      // Verify idempotency service was called
+      expect(mockIdempotencyService.checkAndSetIdempotencyKey).toHaveBeenCalledWith(
+        idempotencyKey,
+      );
+    });
+
+    it('should expose queue metrics for admin monitoring', async () => {
+      const metrics = await service.getQueueMetrics();
+
+      expect(metrics).toHaveProperty('queueDepth');
+      expect(metrics).toHaveProperty('failedJobs');
+      expect(metrics).toHaveProperty('dlqCount');
+      expect(metrics).toHaveProperty('processingRate');
+
+      expect(typeof metrics.queueDepth).toBe('number');
+      expect(typeof metrics.failedJobs).toBe('number');
+      expect(typeof metrics.dlqCount).toBe('number');
+    });
+  });
+});

@@ -2,6 +2,9 @@
 
 import React, { useState } from 'react';
 import { Eye, EyeOff, ArrowLeft } from 'lucide-react';
+import { useAuth } from '../../lib/hooks/useAuth';
+import { useRouter } from 'next/navigation';
+import { useToast } from '../../lib/hooks/useToast';
 
 interface SignInFormData {
   email: string;
@@ -22,6 +25,9 @@ const SignInPage: React.FC<SignInPageProps> = ({
   onGoogleSignIn,
   onSignUpClick 
 }) => {
+  const router = useRouter();
+  const { login } = useAuth();
+  const { success, error } = useToast();
   const [showPassword, setShowPassword] = useState(false);
   const [formData, setFormData] = useState<SignInFormData>({
     email: '',
@@ -47,21 +53,26 @@ const SignInPage: React.FC<SignInPageProps> = ({
     setIsLoading(true);
 
     try {
-      console.log('Sign in data:', formData);
-      
-      // Simulate API call delay
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      alert('Signed in successfully!');
-      // Note: If redirecting here, we don't set isLoading(false) 
-      // to keep the button disabled during the page transition.
-    } catch (error) {
-      console.error('Sign in error:', error);
-      alert('Failed to sign in. Please check your credentials and try again.');
-      setIsLoading(false); // Only re-enable if there is an error
-    } finally {
-      // For the sake of this demo/simulation, we re-enable it.
-      // In a real app, you'd only do this if the user stays on the page.
+      const result = await login({
+        email: formData.email,
+        password: formData.password,
+      });
+
+      if (result.success) {
+        success('Signed in successfully!');
+        
+        // Check for redirect parameter
+        const params = new URLSearchParams(window.location.search);
+        const redirect = params.get('redirect') || '/dashboard';
+        
+        router.push(redirect);
+      } else {
+        error(result.error || 'Failed to sign in. Please check your credentials.');
+        setIsLoading(false);
+      }
+    } catch (err) {
+      console.error('Sign in error:', err);
+      error('An unexpected error occurred. Please try again.');
       setIsLoading(false);
     }
   };

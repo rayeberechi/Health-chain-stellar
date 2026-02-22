@@ -9,11 +9,13 @@ import { OrderEventStoreService } from './services/order-event-store.service';
 import { OrdersGateway } from './gateways/orders.gateway';
 import { OrderEntity } from './entities/order.entity';
 import { OrderEventEntity } from './entities/order-event.entity';
+import { InventoryModule } from '../inventory/inventory.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([OrderEntity, OrderEventEntity]),
     EventEmitterModule.forRoot(),
+    InventoryModule,
   ],
   controllers: [OrdersController],
   providers: [

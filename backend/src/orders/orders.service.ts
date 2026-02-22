@@ -1,4 +1,10 @@
-import { Injectable, NotFoundException, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -10,6 +16,9 @@ import { OrderEntity } from './entities/order.entity';
 import { OrderEventEntity } from './entities/order-event.entity';
 import { OrderStatus } from './enums/order-status.enum';
 import { OrderEventType } from './enums/order-event-type.enum';
+import { Order, BloodType } from './types/order.types';
+import { OrderQueryParamsDto } from './dto/order-query-params.dto';
+import { OrdersResponseDto } from './dto/orders-response.dto';
 import {
   OrderConfirmedEvent,
   OrderCancelledEvent,
@@ -19,6 +28,7 @@ import {
   OrderInTransitEvent,
   OrderDeliveredEvent,
 } from '../events';
+import { InventoryService } from '../inventory/inventory.service';
 
 /** Maps each terminal OrderStatus to its corresponding event-store type. */
 const STATUS_TO_EVENT_TYPE: Record<OrderStatus, OrderEventType> = {
@@ -33,6 +43,7 @@ const STATUS_TO_EVENT_TYPE: Record<OrderStatus, OrderEventType> = {
 @Injectable()
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
+  private readonly orders: Order[] = [];
 
   constructor(
     @InjectRepository(OrderEntity)
@@ -41,6 +52,7 @@ export class OrdersService {
     private readonly stateMachine: OrderStateMachine,
     private readonly eventStore: OrderEventStoreService,
     private readonly ordersGateway: OrdersGateway,
+    private readonly inventoryService: InventoryService,
   ) {}
 
   // ─── Queries ─────────────────────────────────────────────────────────────
@@ -113,7 +125,7 @@ export class OrdersService {
     }
 
     // Sort orders with active orders prioritization
-    const activeStatuses: OrderStatus[] = ['pending', 'confirmed', 'in_transit'];
+    const activeStatuses = ['pending', 'confirmed', 'in_transit'];
     filteredOrders.sort((a, b) => {
       // First, prioritize active orders
       const aIsActive = activeStatuses.includes(a.status);
@@ -201,8 +213,28 @@ export class OrdersService {
   // ─── Commands ─────────────────────────────────────────────────────────────
 
   async create(createOrderDto: any, actorId?: string) {
+    if (!createOrderDto.bloodBankId) {
+      throw new BadRequestException('bloodBankId is required to place an order.');
+    }
+
+    try {
+      await this.inventoryService.reserveStockOrThrow(
+        createOrderDto.bloodBankId,
+        createOrderDto.bloodType,
+        Number(createOrderDto.quantity),
+      );
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        throw error;
+      }
+      throw new ConflictException(
+        'Unable to reserve inventory at the moment. Please retry your request.',
+      );
+    }
+
     const order = this.orderRepo.create({
       hospitalId: createOrderDto.hospitalId,
+      bloodBankId: createOrderDto.bloodBankId,
       bloodType: createOrderDto.bloodType,
       quantity: createOrderDto.quantity,
       deliveryAddress: createOrderDto.deliveryAddress,
@@ -218,6 +250,7 @@ export class OrdersService {
       eventType: OrderEventType.ORDER_CREATED,
       payload: {
         hospitalId: saved.hospitalId,
+        bloodBankId: saved.bloodBankId,
         bloodType: saved.bloodType,
         quantity: saved.quantity,
         deliveryAddress: saved.deliveryAddress,

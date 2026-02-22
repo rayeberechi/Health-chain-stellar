@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
-import React from "react";
+import React, { Suspense } from "react";
 import { Poppins, Roboto, Manrope, DM_Sans } from "next/font/google";
 import "./globals.css";
+import { ToastProvider } from "../components/providers/ToastProvider";
 
 const poppins = Poppins({ 
   subsets: ["latin"], 
@@ -40,7 +41,11 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${poppins.variable} ${roboto.variable} ${manrope.variable} ${dmSans.variable} antialiased`}>
-        {children}
+        <Suspense fallback={null}>
+          <ToastProvider>
+            {children}
+          </ToastProvider>
+        </Suspense>
       </body>
     </html>
   );

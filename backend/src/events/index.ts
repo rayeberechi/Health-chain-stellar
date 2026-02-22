@@ -5,3 +5,4 @@ export * from './order-rider-assigned.event';
 export * from './order-dispatched.event';
 export * from './order-in-transit.event';
 export * from './order-delivered.event';
+export * from './inventory-low.event';

@@ -18,6 +18,9 @@ export class OrderEntity {
   @Column({ name: 'blood_type' })
   bloodType: string;
 
+  @Column({ name: 'blood_bank_id', type: 'varchar', nullable: true })
+  bloodBankId: string | null;
+
   @Column()
   quantity: number;
 
@@ -25,7 +28,7 @@ export class OrderEntity {
   deliveryAddress: string;
 
   @Column({
-    type: 'enum',
+    type: 'simple-enum',
     enum: OrderStatus,
     default: OrderStatus.PENDING,
   })

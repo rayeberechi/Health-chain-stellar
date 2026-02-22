@@ -33,7 +33,7 @@ export class OrderEventEntity {
   @Column({ name: 'event_type' })
   eventType: string;
 
-  @Column({ type: 'jsonb', default: '{}' })
+  @Column({ type: 'simple-json', default: '{}' })
   payload: Record<string, any>;
 
   @Column({ name: 'actor_id', nullable: true, type: 'varchar' })
