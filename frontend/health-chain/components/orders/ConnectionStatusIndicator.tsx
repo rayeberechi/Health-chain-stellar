@@ -1,5 +1,3 @@
-// ConnectionStatusIndicator - Shows WebSocket connection state as a small status dot/banner
-
 import React from 'react';
 import { ConnectionStatus } from '@/lib/utils/websocket-client';
 
@@ -7,7 +5,7 @@ interface ConnectionStatusIndicatorProps {
   status: ConnectionStatus;
 }
 
-const config: Record
+const config: Record<
   ConnectionStatus,
   { dotColor: string; bannerColor: string; label: string; show: boolean }
 > = {
@@ -15,7 +13,7 @@ const config: Record
     dotColor: 'bg-green-500',
     bannerColor: '',
     label: 'Live',
-    show: false, // only show dot when not connected
+    show: false,
   },
   reconnecting: {
     dotColor: 'bg-yellow-400 animate-pulse',
@@ -37,7 +35,6 @@ export const ConnectionStatusIndicator: React.FC<ConnectionStatusIndicatorProps>
   const { dotColor, bannerColor, label, show } = config[status];
 
   if (!show) {
-    // Connected: just a small green dot in the corner — unobtrusive
     return (
       <div className="flex items-center gap-1.5 text-xs text-gray-500 select-none">
         <span className={`inline-block w-2 h-2 rounded-full ${dotColor}`} />
