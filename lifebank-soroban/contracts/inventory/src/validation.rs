@@ -52,12 +52,16 @@ pub fn validate_minimum_shelf_life(
     Ok(())
 }
 
-/// Validate status transition is allowed according to state machine
+/// Validate status transition is allowed according to the blood unit lifecycle state machine.
+///
+/// Uses the pure `is_valid_transition` function to determine whether the transition
+/// is legal. Returns `ContractError::InvalidStatusTransition` if the transition
+/// is not in the allowed set.
 pub fn validate_status_transition(
     current_status: BloodStatus,
     new_status: BloodStatus,
 ) -> Result<(), ContractError> {
-    if !current_status.can_transition_to(&new_status) {
+    if !crate::types::is_valid_transition(&current_status, &new_status) {
         return Err(ContractError::InvalidStatusTransition);
     }
     Ok(())
