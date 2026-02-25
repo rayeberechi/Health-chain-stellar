@@ -1,0 +1,14 @@
+{
+  "errors": {
+    "unauthorized": "You are not authorized to access this resource.",
+    "record_not_found": "The requested health record was not found.",
+    "invalid_token": "Your session has expired. Please login again."
+  },
+  "validation": {
+    "is_not_empty": "This field cannot be empty",
+    "invalid_email": "Please provide a valid email address"
+  },
+  "emails": {
+    "access_granted_subject": "Access Granted to Your Health Record"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "errors": {
+    "unauthorized": "Vous n'êtes pas autorisé à accéder à cette ressource.",
+    "record_not_found": "Le dossier de santé demandé n'a pas été trouvé.",
+    "invalid_token": "Votre session a expiré. Veuillez vous reconnecter."
+  },
+  "validation": {
+    "is_not_empty": "Ce champ ne peut pas être vide",
+    "invalid_email": "Veuillez fournir une adresse e-mail valide"
+  },
+  "emails": {
+    "access_granted_subject": "Accès accordé à votre dossier de santé"
+  }
+}
