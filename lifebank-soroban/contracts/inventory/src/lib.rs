@@ -39,12 +39,17 @@ impl InventoryContract {
 
     /// Register a new blood donation into the inventory
     ///
+    /// Both `donation_timestamp` (collected_at) and `expiration_timestamp` (expiry_at)
+    /// are derived exclusively from the ledger close time (`env.ledger().timestamp()`).
+    /// This ensures that expiration checks — which also use ledger time — are always
+    /// consistent with the stored timestamps. Caller-supplied timestamps were removed
+    /// to eliminate the mismatch described in issue #98.
+    ///
     /// # Arguments
     /// * `env` - Contract environment
     /// * `bank_id` - Blood bank's address (must be authorized)
     /// * `blood_type` - Type of blood (A+, A-, B+, B-, AB+, AB-, O+, O-)
     /// * `quantity_ml` - Quantity in milliliters (100-600ml)
-    /// * `expiration_timestamp` - Unix timestamp when blood expires
     /// * `donor_id` - Optional donor address (None for anonymous)
     ///
     /// # Returns
@@ -54,7 +59,6 @@ impl InventoryContract {
     /// - `NotInitialized`: Contract not initialized
     /// - `NotAuthorizedBloodBank`: Bank is not authorized
     /// - `InvalidQuantity`: Quantity outside acceptable range
-    /// - `InvalidExpiration`: Expiration date is invalid
     ///
     /// # Events
     /// Emits `BloodRegistered` event with all blood unit details
@@ -63,7 +67,6 @@ impl InventoryContract {
         bank_id: Address,
         blood_type: BloodType,
         quantity_ml: u32,
-        expiration_timestamp: u64,
         donor_id: Option<Address>,
     ) -> Result<u64, ContractError> {
         // 1. Verify bank authentication
@@ -79,9 +82,8 @@ impl InventoryContract {
             return Err(ContractError::NotAuthorizedBloodBank);
         }
 
-        // 4. Validate input parameters
-        validation::validate_blood_registration(&env, quantity_ml, expiration_timestamp)?;
-        validation::validate_minimum_shelf_life(&env, expiration_timestamp)?;
+        // 4. Validate quantity
+        validation::validate_quantity(quantity_ml)?;
 
         // 5. Generate unique blood unit ID using atomic counter increment.
         //
@@ -108,8 +110,14 @@ impl InventoryContract {
             return Err(ContractError::DuplicateBloodUnit);
         }
 
-        // 6. Create blood unit struct
+        // 6. Compute timestamps from ledger time.
+        // Using ledger time for both donation and expiration guarantees that
+        // expiration checks (which compare against env.ledger().timestamp())
+        // are always consistent with the stored values.
         let current_time = env.ledger().timestamp();
+        let expiration_timestamp =
+            current_time + (storage::BLOOD_SHELF_LIFE_DAYS * storage::SECONDS_PER_DAY);
+
         let blood_unit = BloodUnit {
             id: blood_unit_id,
             blood_type,
