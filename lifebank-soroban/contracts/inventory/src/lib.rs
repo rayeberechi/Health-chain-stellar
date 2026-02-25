@@ -7,7 +7,7 @@ mod types;
 mod validation;
 
 use crate::error::ContractError;
-use crate::types::{BloodStatus, BloodType, BloodUnit, DataKey};
+use crate::types::{BloodStatus, BloodType, BloodUnit, DataKey, is_valid_transition};
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Map, String, Vec};
 #[contract]
@@ -164,13 +164,16 @@ impl InventoryContract {
             return Err(ContractError::BloodUnitExpired);
         }
 
-        if blood_unit.status.is_terminal() {
+        // Validate the transition using the pure is_valid_transition function.
+        // This covers terminal state checks (Delivered/Expired cannot transition)
+        // as well as all illegal backwards transitions.
+        let old_status = blood_unit.status;
+        if !is_valid_transition(&old_status, &new_status) {
+            // Emit an event with both statuses for debuggability before returning error
+            events::emit_invalid_transition(&env, unit_id, old_status, new_status);
             return Err(ContractError::InvalidStatusTransition);
         }
 
-        validation::validate_status_transition(blood_unit.status, new_status)?;
-
-        let old_status = blood_unit.status;
         blood_unit.status = new_status;
         storage::set_blood_unit(&env, &blood_unit);
 
@@ -251,13 +254,11 @@ impl InventoryContract {
                 return Err(ContractError::BloodUnitExpired);
             }
 
-            if blood_unit.status.is_terminal() {
+            let old_status = blood_unit.status;
+            if !is_valid_transition(&old_status, &new_status) {
+                events::emit_invalid_transition(&env, unit_id, old_status, new_status);
                 return Err(ContractError::InvalidStatusTransition);
             }
-
-            validation::validate_status_transition(blood_unit.status, new_status)?;
-
-            let old_status = blood_unit.status;
             blood_unit.status = new_status;
             storage::set_blood_unit(&env, &blood_unit);
 
