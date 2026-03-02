@@ -3,25 +3,22 @@
 #![cfg(test)]
 
 use soroban_sdk::{
-    symbol_short, testutils::Address as _, Address, Env, Map, Symbol, Vec,
+    symbol_short,
+    testutils::{Address as _, Ledger},
+    Address, Env, Map, Symbol,
 };
 
-use healthchain::{
-    BloodStatus, BloodType, BloodUnit, DataKey, HealthChainContract, HealthChainContractClient,
-    TrailMetadata,
+use crate::{
+    BloodStatus, BloodType, BloodUnit, HealthChainContract, HealthChainContractClient, ADMIN,
+    BLOOD_UNITS,
 };
-
-// Storage key constants from lib.rs
-const BLOOD_UNITS: Symbol = symbol_short!("UNITS");
-const ADMIN: Symbol = symbol_short!("ADMIN");
-const BLOOD_BANKS: Symbol = symbol_short!("BANKS");
 
 #[test]
 fn test_register_unit_creates_blood_unit_in_persistent_storage() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, HealthChainContract);
+    let contract_id = env.register(HealthChainContract, ());
     let client = HealthChainContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -64,7 +61,7 @@ fn test_register_unit_creates_bank_units_index_in_persistent_storage() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, HealthChainContract);
+    let contract_id = env.register(HealthChainContract, ());
     let client = HealthChainContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -87,7 +84,7 @@ fn test_register_unit_creates_bank_units_index_in_persistent_storage() {
         // This test documents the expected behavior per requirements
         // If BankUnits index is implemented, it should be stored as:
         // DataKey::BankUnits(bank_id) -> Vec<u64> in persistent storage
-        
+
         // For now, we verify the unit exists and is associated with the bank
         let units: Map<u64, BloodUnit> = env
             .storage()
@@ -97,7 +94,7 @@ fn test_register_unit_creates_bank_units_index_in_persistent_storage() {
 
         let unit = units.get(unit_id).expect("Unit should exist");
         assert_eq!(unit.bank_id, bank);
-        
+
         // When BankUnits index is implemented, uncomment:
         // let bank_units_key = DataKey::BankUnits(bank.clone());
         // let bank_units: Vec<u64> = env
@@ -114,7 +111,7 @@ fn test_register_unit_creates_donor_units_index_in_persistent_storage() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, HealthChainContract);
+    let contract_id = env.register(HealthChainContract, ());
     let client = HealthChainContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -138,7 +135,7 @@ fn test_register_unit_creates_donor_units_index_in_persistent_storage() {
         // This test documents the expected behavior per requirements
         // DonorUnits should be stored as:
         // DataKey::DonorUnits(bank_id, donor_id) -> Vec<u64> in persistent storage
-        
+
         // For now, we verify the unit exists with the donor_id
         let units: Map<u64, BloodUnit> = env
             .storage()
@@ -148,7 +145,7 @@ fn test_register_unit_creates_donor_units_index_in_persistent_storage() {
 
         let unit = units.get(unit_id).expect("Unit should exist");
         assert_eq!(unit.donor_id, donor_id);
-        
+
         // When DonorUnits index is implemented, uncomment:
         // let donor_units_key = DataKey::DonorUnits(bank.clone(), donor_id.clone());
         // let donor_units: Vec<u64> = env
@@ -165,7 +162,7 @@ fn test_initialize_creates_admin_in_instance_storage() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, HealthChainContract);
+    let contract_id = env.register(HealthChainContract, ());
     let client = HealthChainContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -191,7 +188,7 @@ fn test_update_status_modifies_existing_entry_no_new_key() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, HealthChainContract);
+    let contract_id = env.register(HealthChainContract, ());
     let client = HealthChainContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -212,11 +209,7 @@ fn test_update_status_modifies_existing_entry_no_new_key() {
 
     // Get initial storage state
     let initial_keys_count = env.as_contract(&contract_id, || {
-        let units: Map<u64, BloodUnit> = env
-            .storage()
-            .persistent()
-            .get(&BLOOD_UNITS)
-            .unwrap();
+        let units: Map<u64, BloodUnit> = env.storage().persistent().get(&BLOOD_UNITS).unwrap();
         units.len()
     });
 
@@ -225,11 +218,7 @@ fn test_update_status_modifies_existing_entry_no_new_key() {
 
     // Verify status changed in-place, no new keys created
     env.as_contract(&contract_id, || {
-        let units: Map<u64, BloodUnit> = env
-            .storage()
-            .persistent()
-            .get(&BLOOD_UNITS)
-            .unwrap();
+        let units: Map<u64, BloodUnit> = env.storage().persistent().get(&BLOOD_UNITS).unwrap();
 
         // Same number of keys
         assert_eq!(units.len(), initial_keys_count);
@@ -245,7 +234,7 @@ fn test_expire_unit_updates_status_field_no_deletion() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, HealthChainContract);
+    let contract_id = env.register(HealthChainContract, ());
     let client = HealthChainContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -256,13 +245,7 @@ fn test_expire_unit_updates_status_field_no_deletion() {
 
     // Register unit with short expiration
     let expiration = env.ledger().timestamp() + 86400; // 1 day
-    let unit_id = client.register_blood(
-        &bank,
-        &BloodType::ONegative,
-        &250,
-        &expiration,
-        &None,
-    );
+    let unit_id = client.register_blood(&bank, &BloodType::ONegative, &250, &expiration, &None);
 
     // Fast-forward time past expiration
     env.ledger().with_mut(|li| {
@@ -272,7 +255,7 @@ fn test_expire_unit_updates_status_field_no_deletion() {
     // Trigger expiration by trying to allocate
     let hospital = Address::generate(&env);
     client.register_hospital(&hospital);
-    
+
     // This should fail due to expiration
     let result = client.try_allocate_blood(&bank, &unit_id, &hospital);
     assert!(result.is_err());
@@ -300,7 +283,7 @@ fn test_register_two_units_same_bank_creates_two_entries() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, HealthChainContract);
+    let contract_id = env.register(HealthChainContract, ());
     let client = HealthChainContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
