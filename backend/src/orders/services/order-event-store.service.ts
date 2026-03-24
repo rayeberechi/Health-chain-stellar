@@ -23,6 +23,8 @@ const EVENT_TO_STATUS: Record<OrderEventType, OrderStatus> = {
   [OrderEventType.ORDER_IN_TRANSIT]: OrderStatus.IN_TRANSIT,
   [OrderEventType.ORDER_DELIVERED]: OrderStatus.DELIVERED,
   [OrderEventType.ORDER_CANCELLED]: OrderStatus.CANCELLED,
+  [OrderEventType.ORDER_DISPUTED]: OrderStatus.DISPUTED,
+  [OrderEventType.ORDER_RESOLVED]: OrderStatus.RESOLVED,
 };
 
 @Injectable()
