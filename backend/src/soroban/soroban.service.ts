@@ -1,8 +1,9 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
+
 import {
   Contract,
-  SorobanRpc,
   TransactionBuilder,
   Networks,
   BASE_FEE,
@@ -11,8 +12,10 @@ import {
   Asset,
   xdr,
 } from '@stellar/stellar-sdk';
-import { InjectRepository } from '@nestjs/typeorm';
+import { Server } from '@stellar/stellar-sdk/rpc';
+import * as SorobanRpc from '@stellar/stellar-sdk/rpc';
 import { Repository } from 'typeorm';
+
 import { BlockchainEvent } from './entities/blockchain-event.entity';
 import {
   ContractError,
@@ -31,7 +34,7 @@ interface RetryConfig {
 @Injectable()
 export class SorobanService implements OnModuleInit {
   private readonly logger = new Logger(SorobanService.name);
-  private server: SorobanRpc.Server;
+  private server: Server;
   private contract: Contract;
   private sourceKeypair: Keypair;
   private networkPassphrase: string;
@@ -41,7 +44,10 @@ export class SorobanService implements OnModuleInit {
     maxDelay: 10000,
     backoffMultiplier: 2,
   };
-  private readonly temperatureThresholds = new Map<string, TemperatureThreshold>();
+  private readonly temperatureThresholds = new Map<
+    string,
+    TemperatureThreshold
+  >();
 
   constructor(
     private configService: ConfigService,
@@ -56,9 +62,12 @@ export class SorobanService implements OnModuleInit {
     );
     const contractId = this.configService.get<string>('SOROBAN_CONTRACT_ID');
     const secretKey = this.configService.get<string>('SOROBAN_SECRET_KEY');
-    const network = this.configService.get<string>('SOROBAN_NETWORK', 'testnet');
+    const network = this.configService.get<string>(
+      'SOROBAN_NETWORK',
+      'testnet',
+    );
 
-    this.server = new SorobanRpc.Server(rpcUrl);
+    this.server = new Server(rpcUrl);
     this.networkPassphrase =
       network === 'mainnet' ? Networks.PUBLIC : Networks.TESTNET;
 
@@ -77,29 +86,35 @@ export class SorobanService implements OnModuleInit {
    * Register a blood unit on the blockchain
    */
   async registerBloodUnit(params: {
-    unitId: string;
-    bloodType: string;
-    donorId: string;
     bankId: string;
+    bloodType: string;
+    quantityMl: number;
+    expirationTimestamp: number;
+    donorId?: string;
   }): Promise<{ transactionHash: string; unitId: number }> {
     return this.executeWithRetry(async () => {
       const bloodTypeEnum = this.mapBloodType(params.bloodType);
-      
-      const account = await this.server.getAccount(this.sourceKeypair.publicKey());
-      
+
+      const account = await this.server.getAccount(
+        this.sourceKeypair.publicKey(),
+      );
+
       const transaction = new TransactionBuilder(account, {
         fee: BASE_FEE,
         networkPassphrase: this.networkPassphrase,
       })
         .addOperation(
           this.contract.call(
-            'register_blood_unit',
-            xdr.ScVal.scvSymbol(params.unitId),
+            'register_blood',
+            this.createAddressScVal(params.bankId),
             bloodTypeEnum,
-            xdr.ScVal.scvSymbol(params.donorId),
-            xdr.ScVal.scvAddress(xdr.ScAddress.scAddressTypeAccount(
-              Keypair.fromPublicKey(params.bankId).xdrPublicKey()
-            )),
+            xdr.ScVal.scvU32(params.quantityMl),
+            xdr.ScVal.scvU64(
+              xdr.Uint64.fromString(params.expirationTimestamp.toString()),
+            ),
+            params.donorId
+              ? xdr.ScVal.scvSymbol(params.donorId)
+              : xdr.ScVal.scvVoid(),
           ),
         )
         .setTimeout(30)
@@ -108,15 +123,15 @@ export class SorobanService implements OnModuleInit {
       transaction.sign(this.sourceKeypair);
 
       const response = await this.server.sendTransaction(transaction);
-      
+
       if (response.status === 'PENDING') {
         const result = await this.pollTransactionStatus(response.hash);
         const unitId = this.extractUnitIdFromResult(result);
-        
+
         await this.saveEvent({
           eventType: 'blood_registered',
           transactionHash: response.hash,
-          data: { ...params, unitId },
+          data: { ...params, blockchainUnitId: unitId },
         });
 
         return { transactionHash: response.hash, unitId };
@@ -136,8 +151,10 @@ export class SorobanService implements OnModuleInit {
     condition: string;
   }): Promise<{ transactionHash: string }> {
     return this.executeWithRetry(async () => {
-      const account = await this.server.getAccount(this.sourceKeypair.publicKey());
-      
+      const account = await this.server.getAccount(
+        this.sourceKeypair.publicKey(),
+      );
+
       const transaction = new TransactionBuilder(account, {
         fee: BASE_FEE,
         networkPassphrase: this.networkPassphrase,
@@ -146,12 +163,16 @@ export class SorobanService implements OnModuleInit {
           this.contract.call(
             'transfer_custody',
             xdr.ScVal.scvU64(xdr.Uint64.fromString(params.unitId.toString())),
-            xdr.ScVal.scvAddress(xdr.ScAddress.scAddressTypeAccount(
-              Keypair.fromPublicKey(params.fromAccount).xdrPublicKey()
-            )),
-            xdr.ScVal.scvAddress(xdr.ScAddress.scAddressTypeAccount(
-              Keypair.fromPublicKey(params.toAccount).xdrPublicKey()
-            )),
+            xdr.ScVal.scvAddress(
+              xdr.ScAddress.scAddressTypeAccount(
+                Keypair.fromPublicKey(params.fromAccount).xdrPublicKey(),
+              ),
+            ),
+            xdr.ScVal.scvAddress(
+              xdr.ScAddress.scAddressTypeAccount(
+                Keypair.fromPublicKey(params.toAccount).xdrPublicKey(),
+              ),
+            ),
             xdr.ScVal.scvString(params.condition),
           ),
         )
@@ -161,10 +182,10 @@ export class SorobanService implements OnModuleInit {
       transaction.sign(this.sourceKeypair);
 
       const response = await this.server.sendTransaction(transaction);
-      
+
       if (response.status === 'PENDING') {
         await this.pollTransactionStatus(response.hash);
-        
+
         await this.saveEvent({
           eventType: 'custody_transferred',
           transactionHash: response.hash,
@@ -189,7 +210,10 @@ export class SorobanService implements OnModuleInit {
   }): Promise<{ transactionHash: string }> {
     return this.executeWithRetry(async () => {
       const bloodType = params.bloodType ?? 'O+';
-      const threshold = get_threshold_or_default(this.temperatureThresholds, bloodType);
+      const threshold = get_threshold_or_default(
+        this.temperatureThresholds,
+        bloodType,
+      );
       const thresholdValidation = validate_threshold(threshold);
 
       if (!thresholdValidation.ok) {
@@ -204,11 +228,13 @@ export class SorobanService implements OnModuleInit {
         throw new Error(ContractError.InvalidThreshold);
       }
 
-      const account = await this.server.getAccount(this.sourceKeypair.publicKey());
-      
+      const account = await this.server.getAccount(
+        this.sourceKeypair.publicKey(),
+      );
+
       // Temperature in Celsius * 10 (e.g., 2.5°C = 25)
       const tempValue = Math.round(params.temperature * 10);
-      
+
       const transaction = new TransactionBuilder(account, {
         fee: BASE_FEE,
         networkPassphrase: this.networkPassphrase,
@@ -218,7 +244,9 @@ export class SorobanService implements OnModuleInit {
             'log_temperature',
             xdr.ScVal.scvU64(xdr.Uint64.fromString(params.unitId.toString())),
             xdr.ScVal.scvI32(tempValue),
-            xdr.ScVal.scvU64(xdr.Uint64.fromString(params.timestamp.toString())),
+            xdr.ScVal.scvU64(
+              xdr.Uint64.fromString(params.timestamp.toString()),
+            ),
           ),
         )
         .setTimeout(30)
@@ -227,10 +255,10 @@ export class SorobanService implements OnModuleInit {
       transaction.sign(this.sourceKeypair);
 
       const response = await this.server.sendTransaction(transaction);
-      
+
       if (response.status === 'PENDING') {
         await this.pollTransactionStatus(response.hash);
-        
+
         await this.saveEvent({
           eventType: 'temperature_logged',
           transactionHash: response.hash,
@@ -253,8 +281,10 @@ export class SorobanService implements OnModuleInit {
     statusHistory: any[];
   }> {
     return this.executeWithRetry(async () => {
-      const account = await this.server.getAccount(this.sourceKeypair.publicKey());
-      
+      const account = await this.server.getAccount(
+        this.sourceKeypair.publicKey(),
+      );
+
       const transaction = new TransactionBuilder(account, {
         fee: BASE_FEE,
         networkPassphrase: this.networkPassphrase,
@@ -269,13 +299,39 @@ export class SorobanService implements OnModuleInit {
         .build();
 
       const simulated = await this.server.simulateTransaction(transaction);
-      
+
       if (SorobanRpc.Api.isSimulationSuccess(simulated)) {
         const result = simulated.result?.retval;
         return this.parseTrailResult(result);
       }
 
       throw new Error('Failed to get unit trail');
+    });
+  }
+
+  async isBloodBank(bankId: string): Promise<boolean> {
+    return this.executeWithRetry(async () => {
+      const account = await this.server.getAccount(
+        this.sourceKeypair.publicKey(),
+      );
+      const transaction = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(
+          this.contract.call('is_blood_bank', this.createAddressScVal(bankId)),
+        )
+        .setTimeout(30)
+        .build();
+
+      const simulated = await this.server.simulateTransaction(transaction);
+      if (!SorobanRpc.Api.isSimulationSuccess(simulated)) {
+        return false;
+      }
+
+      const result = simulated.result?.retval;
+      const parsed = this.parseScVal(result);
+      return Boolean(parsed);
     });
   }
 
@@ -352,7 +408,9 @@ export class SorobanService implements OnModuleInit {
       });
 
       await this.eventRepository.save(event);
-      this.logger.log(`Event saved: ${params.eventType} - ${params.transactionHash}`);
+      this.logger.log(
+        `Event saved: ${params.eventType} - ${params.transactionHash}`,
+      );
     } catch (error) {
       this.logger.error(`Failed to save event: ${error.message}`);
     }
@@ -379,6 +437,14 @@ export class SorobanService implements OnModuleInit {
     }
 
     return xdr.ScVal.scvU32(enumValue);
+  }
+
+  private createAddressScVal(publicKey: string): xdr.ScVal {
+    return xdr.ScVal.scvAddress(
+      xdr.ScAddress.scAddressTypeAccount(
+        Keypair.fromPublicKey(publicKey).xdrPublicKey(),
+      ),
+    );
   }
 
   /**
@@ -458,6 +524,8 @@ export class SorobanService implements OnModuleInit {
         return val._value.toString();
       case 'scvMap':
         return this.parseMap(val._value);
+      case 'scvBool':
+        return Boolean(val._value);
       default:
         return val._value;
     }
@@ -468,7 +536,7 @@ export class SorobanService implements OnModuleInit {
    */
   private parseMap(map: any[]): Record<string, any> {
     const result: Record<string, any> = {};
-    
+
     for (const entry of map) {
       const key = this.parseScVal(entry.key);
       const value = this.parseScVal(entry.val);
