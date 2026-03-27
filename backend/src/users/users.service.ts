@@ -4,8 +4,8 @@ import {
   BadRequestException,
   Inject,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, Repository } from 'typeorm';
 
 import { UserEntity } from './entities/user.entity';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -23,6 +23,8 @@ import {
 @Injectable()
 export class UsersService {
   constructor(
+    @InjectDataSource()
+    private readonly dataSource: DataSource,
     @InjectRepository(UserEntity)
     private readonly userRepository: Repository<UserEntity>,
     private readonly storageService: StorageService,
@@ -93,21 +95,22 @@ export class UsersService {
       }
     }
 
-    // Update user
-    const updatedUser = this.userRepository.merge(user, updateProfileDto);
-    const savedUser = await this.userRepository.save(updatedUser);
+    const savedUser = await this.dataSource.transaction(async (manager) => {
+      const updatedUser = manager.merge(UserEntity, user, updateProfileDto);
+      const saved = await manager.save(UserEntity, updatedUser);
 
-    // Log activity
-    await this.profileActivityService.logActivity({
-      userId: context?.actorId ?? id,
-      activityType: ProfileActivityType.PROFILE_UPDATED,
-      description: `Profile updated for user ${id}`,
-      metadata: {
-        targetUserId: id,
-        changedFields,
-      },
-      ipAddress: context?.ipAddress,
-      userAgent: context?.userAgent,
+      // Activity log is written atomically with the user update.
+      // If either write fails the whole transaction rolls back.
+      await this.profileActivityService.logActivityWithManager(manager, {
+        userId: context?.actorId ?? id,
+        activityType: ProfileActivityType.PROFILE_UPDATED,
+        description: `Profile updated for user ${id}`,
+        metadata: { targetUserId: id, changedFields },
+        ipAddress: context?.ipAddress,
+        userAgent: context?.userAgent,
+      });
+
+      return saved;
     });
 
     return {
@@ -220,20 +223,22 @@ export class UsersService {
     }
 
     user.avatarUrl = uploadResult.url;
-    await this.userRepository.save(user);
 
-    // Log activity
-    await this.profileActivityService.logActivity({
-      userId,
-      activityType: ProfileActivityType.AVATAR_UPLOADED,
-      description: `Avatar uploaded for user ${userId}`,
-      metadata: {
-        avatarUrl: uploadResult.url,
-        fileSize: file.size,
-        mimeType: file.mimetype,
-      },
-      ipAddress: context?.ipAddress,
-      userAgent: context?.userAgent,
+    await this.dataSource.transaction(async (manager) => {
+      await manager.save(UserEntity, user);
+
+      await this.profileActivityService.logActivityWithManager(manager, {
+        userId,
+        activityType: ProfileActivityType.AVATAR_UPLOADED,
+        description: `Avatar uploaded for user ${userId}`,
+        metadata: {
+          avatarUrl: uploadResult.url,
+          fileSize: file.size,
+          mimeType: file.mimetype,
+        },
+        ipAddress: context?.ipAddress,
+        userAgent: context?.userAgent,
+      });
     });
 
     return {
@@ -265,17 +270,19 @@ export class UsersService {
     const key = user.avatarUrl.replace('/uploads/', '');
     await this.storageService.deleteFile(key);
 
-    // Update user
+    // Update user and log activity atomically — if the DB write fails
+    // the activity record is also rolled back, keeping them consistent.
     user.avatarUrl = null;
-    await this.userRepository.save(user);
+    await this.dataSource.transaction(async (manager) => {
+      await manager.save(UserEntity, user);
 
-    // Log activity
-    await this.profileActivityService.logActivity({
-      userId,
-      activityType: ProfileActivityType.AVATAR_DELETED,
-      description: `Avatar deleted for user ${userId}`,
-      ipAddress: context?.ipAddress,
-      userAgent: context?.userAgent,
+      await this.profileActivityService.logActivityWithManager(manager, {
+        userId,
+        activityType: ProfileActivityType.AVATAR_DELETED,
+        description: `Avatar deleted for user ${userId}`,
+        ipAddress: context?.ipAddress,
+        userAgent: context?.userAgent,
+      });
     });
 
     return {

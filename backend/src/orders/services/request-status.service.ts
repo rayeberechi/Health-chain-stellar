@@ -5,7 +5,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { NotificationsService } from '../../notifications/notifications.service';
@@ -61,6 +61,7 @@ export class RequestStatusService {
     dto: UpdateRequestStatusDto,
     actorId?: string,
     actorRole?: string,
+    manager?: EntityManager,
   ): Promise<{ nextStatus: OrderStatus; eventType: OrderEventType }> {
     const nextStatus = this.resolveNextStatus(dto);
     const previousStatus = order.status;
@@ -69,18 +70,35 @@ export class RequestStatusService {
     this.stateMachine.transition(previousStatus, nextStatus);
 
     const eventType = STATUS_TO_EVENT_TYPE[nextStatus];
-    await this.eventStore.persistEvent({
-      orderId: order.id,
-      eventType,
-      payload: {
-        previousStatus,
-        newStatus: nextStatus,
-        action: dto.action ?? null,
-        reason: dto.reason ?? null,
-        comment: dto.comment ?? null,
-      },
-      actorId,
-    });
+
+    // Use the provided manager (transactional) or fall back to the default repo manager.
+    if (manager) {
+      await this.eventStore.persistEventWithManager(manager, {
+        orderId: order.id,
+        eventType,
+        payload: {
+          previousStatus,
+          newStatus: nextStatus,
+          action: dto.action ?? null,
+          reason: dto.reason ?? null,
+          comment: dto.comment ?? null,
+        },
+        actorId,
+      });
+    } else {
+      await this.eventStore.persistEvent({
+        orderId: order.id,
+        eventType,
+        payload: {
+          previousStatus,
+          newStatus: nextStatus,
+          action: dto.action ?? null,
+          reason: dto.reason ?? null,
+          comment: dto.comment ?? null,
+        },
+        actorId,
+      });
+    }
 
     if (nextStatus === OrderStatus.CANCELLED && previousStatus !== OrderStatus.DELIVERED) {
       await this.inventoryService.restoreStockOrThrow(
@@ -111,7 +129,7 @@ export class RequestStatusService {
       timestamp: new Date(),
     });
 
-    await this.trySyncWithBlockchain(order, previousStatus, nextStatus, actorId, dto.reason);
+    await this.trySyncWithBlockchain(order, previousStatus, nextStatus, actorId, dto.reason, manager);
     await this.tryNotifyStatusChange(order, previousStatus, nextStatus, dto.reason);
 
     this.logger.log(
@@ -217,14 +235,19 @@ export class RequestStatusService {
     nextStatus: OrderStatus,
     actorId?: string,
     reason?: string,
+    manager?: EntityManager,
   ): Promise<void> {
     if (!this.blockchainEventRepo) {
       return;
     }
 
     try {
+      const repo = manager
+        ? manager.getRepository(BlockchainEvent)
+        : this.blockchainEventRepo;
+
       const txHash = `order-status-${order.id}-${Date.now()}`;
-      const entity = this.blockchainEventRepo.create({
+      const entity = repo.create({
         eventType: 'ORDER_STATUS_UPDATED',
         transactionHash: txHash,
         eventData: {
@@ -238,7 +261,7 @@ export class RequestStatusService {
         processed: false,
       });
 
-      await this.blockchainEventRepo.save(entity);
+      await repo.save(entity);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       this.logger.warn(`Blockchain sync failed for order ${order.id}: ${message}`);

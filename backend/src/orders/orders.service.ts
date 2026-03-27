@@ -6,8 +6,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { InjectRepository } from '@nestjs/typeorm';
-import { OptimisticLockVersionMismatchError, Repository } from 'typeorm';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, OptimisticLockVersionMismatchError, Repository } from 'typeorm';
 
 import {
   OrderConfirmedEvent,
@@ -42,6 +42,8 @@ export class OrdersService {
   private readonly orders: Order[] = [];
 
   constructor(
+    @InjectDataSource()
+    private readonly dataSource: DataSource,
     @InjectRepository(OrderEntity)
     private readonly orderRepo: Repository<OrderEntity>,
     private readonly stateMachine: OrderStateMachine,
@@ -223,30 +225,35 @@ export class OrdersService {
       );
     }
 
-    const order = this.orderRepo.create({
-      hospitalId: createOrderDto.hospitalId,
-      bloodBankId: createOrderDto.bloodBankId,
-      bloodType: createOrderDto.bloodType,
-      quantity: createOrderDto.quantity,
-      deliveryAddress: createOrderDto.deliveryAddress,
-      status: OrderStatus.PENDING,
-      riderId: null,
-    });
+    const saved = await this.dataSource.transaction(async (manager) => {
+      const order = manager.create(OrderEntity, {
+        hospitalId: createOrderDto.hospitalId,
+        bloodBankId: createOrderDto.bloodBankId,
+        bloodType: createOrderDto.bloodType,
+        quantity: createOrderDto.quantity,
+        deliveryAddress: createOrderDto.deliveryAddress,
+        status: OrderStatus.PENDING,
+        riderId: null,
+      });
 
-    const saved = await this.orderRepo.save(order);
+      const savedOrder = await manager.save(OrderEntity, order);
 
-    // Persist the creation event — marks order as PENDING in the event store.
-    await this.eventStore.persistEvent({
-      orderId: saved.id,
-      eventType: OrderEventType.ORDER_CREATED,
-      payload: {
-        hospitalId: saved.hospitalId,
-        bloodBankId: saved.bloodBankId,
-        bloodType: saved.bloodType,
-        quantity: saved.quantity,
-        deliveryAddress: saved.deliveryAddress,
-      },
-      actorId,
+      // Persist the creation event atomically with the order row.
+      // If either write fails the whole transaction rolls back.
+      await this.eventStore.persistEventWithManager(manager, {
+        orderId: savedOrder.id,
+        eventType: OrderEventType.ORDER_CREATED,
+        payload: {
+          hospitalId: savedOrder.hospitalId,
+          bloodBankId: savedOrder.bloodBankId,
+          bloodType: savedOrder.bloodType,
+          quantity: savedOrder.quantity,
+          deliveryAddress: savedOrder.deliveryAddress,
+        },
+        actorId,
+      });
+
+      return savedOrder;
     });
 
     this.logger.log(`Order created: ${saved.id}`);
@@ -292,9 +299,14 @@ export class OrdersService {
         : statusUpdate;
 
     const order = await this.findOrderOrFail(id);
-    await this.requestStatusService.applyStatusUpdate(order, dto, actorId, actorRole);
+
     try {
-      const updated = await this.orderRepo.save(order);
+      const updated = await this.dataSource.transaction(async (manager) => {
+        await this.requestStatusService.applyStatusUpdate(
+          order, dto, actorId, actorRole, manager,
+        );
+        return manager.save(OrderEntity, order);
+      });
       return { message: 'Order status updated successfully', data: updated };
     } catch (err) {
       if (err instanceof OptimisticLockVersionMismatchError) {
@@ -313,12 +325,16 @@ export class OrdersService {
    */
   async remove(id: string, actorId?: string) {
     const order = await this.findOrderOrFail(id);
-    await this.requestStatusService.applyStatusUpdate(
-      order,
-      { action: RequestStatusAction.CANCEL },
-      actorId,
-    );
-    await this.orderRepo.save(order);
+    await this.dataSource.transaction(async (manager) => {
+      await this.requestStatusService.applyStatusUpdate(
+        order,
+        { action: RequestStatusAction.CANCEL },
+        actorId,
+        undefined,
+        manager,
+      );
+      await manager.save(OrderEntity, order);
+    });
     return { message: 'Order cancelled successfully', data: { id } };
   }
 
