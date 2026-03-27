@@ -22,6 +22,8 @@ import { Permission } from '../auth/enums/permission.enum';
 import { BloodInventoryQueryService } from './blood-inventory-query.service';
 import { BloodStatusService } from './blood-status.service';
 import { BloodUnitsService } from './blood-units.service';
+import { QrVerificationService } from './qr-verification.service';
+import { VerifyQrDto } from './dto/verify-qr.dto';
 import {
   BulkRegisterBloodUnitsDto,
   RegisterBloodUnitDto,
@@ -41,7 +43,11 @@ export class BloodUnitsController {
   constructor(
     private readonly bloodUnitsService: BloodUnitsService,
     private readonly bloodStatusService: BloodStatusService,
+<<<<<<< feature/issues-381-388-389-392
+    private readonly qrVerificationService: QrVerificationService,
+=======
     private readonly inventoryQueryService: BloodInventoryQueryService,
+>>>>>>> main
   ) {}
 
   @RequirePermissions(Permission.REGISTER_BLOOD_UNIT)
@@ -137,6 +143,19 @@ export class BloodUnitsController {
     return this.bloodStatusService.bulkUpdateStatus(dto, request.user);
   }
 
+<<<<<<< feature/issues-381-388-389-392
+  @RequirePermissions(Permission.UPDATE_BLOOD_STATUS)
+  @Post('verify-qr')
+  @HttpCode(HttpStatus.OK)
+  async verifyQr(@Body() dto: VerifyQrDto) {
+    return this.qrVerificationService.verify(dto);
+  }
+
+  @RequirePermissions(Permission.VIEW_BLOOD_STATUS_HISTORY)
+  @Get('verify-qr/history/:orderId')
+  async getVerificationHistory(@Param('orderId', ParseUUIDPipe) orderId: string) {
+    return this.qrVerificationService.getVerificationHistory(orderId);
+=======
   @RequirePermissions(Permission.REGISTER_BLOOD_UNIT)
   @Get('inventory')
   async queryInventory(@Query() dto: QueryBloodInventoryDto) {
@@ -159,5 +178,6 @@ export class BloodUnitsController {
       bloodType,
       requiredVolumeMl,
     );
+>>>>>>> main
   }
 }

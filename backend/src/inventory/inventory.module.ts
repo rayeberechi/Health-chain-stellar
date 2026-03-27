@@ -10,15 +10,16 @@ import { UsersModule } from '../users/users.module';
 
 import { InventoryAlertController } from './controllers/inventory-alert.controller';
 import { AlertPreferenceEntity } from './entities/alert-preference.entity';
-import { InventoryAlertEntity } from './entities/inventory-alert.entity';
-import { InventoryStockEntity } from './entities/inventory-stock.entity';
-import { InventoryEntity } from './entities/inventory.entity';
+import { RestockingCampaignEntity } from './entities/restocking-campaign.entity';
 import { InventoryEventListener } from './inventory-event.listener';
 import { InventoryForecastingService } from './inventory-forecasting.service';
 import { InventoryController } from './inventory.controller';
 import { InventoryService } from './inventory.service';
 import { DonorOutreachProcessor } from './processors/donor-outreach.processor';
 import { InventoryAlertService } from './services/inventory-alert.service';
+import { RestockingCampaignService } from './services/restocking-campaign.service';
+import { InventoryAlertController } from './controllers/inventory-alert.controller';
+import { RestockingCampaignController } from './controllers/restocking-campaign.controller';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { InventoryAlertService } from './services/inventory-alert.service';
       InventoryStockEntity,
       InventoryAlertEntity,
       AlertPreferenceEntity,
+      RestockingCampaignEntity,
     ]),
     BullModule.registerQueue({
       name: 'donor-outreach',
@@ -37,18 +39,15 @@ import { InventoryAlertService } from './services/inventory-alert.service';
     NotificationsModule,
     UsersModule,
   ],
-  controllers: [InventoryController, InventoryAlertController],
+  controllers: [InventoryController, InventoryAlertController, RestockingCampaignController],
   providers: [
     InventoryService,
     InventoryForecastingService,
     InventoryEventListener,
     DonorOutreachProcessor,
     InventoryAlertService,
+    RestockingCampaignService,
   ],
-  exports: [
-    InventoryService,
-    InventoryForecastingService,
-    InventoryAlertService,
-  ],
+  exports: [InventoryService, InventoryForecastingService, InventoryAlertService, RestockingCampaignService],
 })
 export class InventoryModule {}
