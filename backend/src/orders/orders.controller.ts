@@ -16,10 +16,11 @@ import {
 
 import { RequirePermissions } from '../auth/decorators/require-permissions.decorator';
 import { Permission } from '../auth/enums/permission.enum';
+import { PaginatedResponse } from '../common/pagination';
 
 import { OrderQueryParamsDto } from './dto/order-query-params.dto';
-import { OrdersResponseDto } from './dto/orders-response.dto';
 import { OrdersService } from './orders.service';
+import { Order } from './types/order.types';
 
 @Controller('orders')
 export class OrdersController {
@@ -49,7 +50,7 @@ export class OrdersController {
       }),
     )
     params: OrderQueryParamsDto,
-  ): Promise<OrdersResponseDto> {
+  ): Promise<PaginatedResponse<Order>> {
     // Additional validation for date range
     if (params.startDate && params.endDate) {
       const start = new Date(params.startDate);

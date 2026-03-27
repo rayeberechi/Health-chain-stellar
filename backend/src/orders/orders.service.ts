@@ -22,9 +22,9 @@ import {
   OrderResolvedEvent,
 } from '../events';
 import { InventoryService } from '../inventory/inventory.service';
+import { PaginatedResponse, PaginationUtil } from '../common/pagination';
 
 import { OrderQueryParamsDto } from './dto/order-query-params.dto';
-import { OrdersResponseDto } from './dto/orders-response.dto';
 import { OrderEventEntity } from './entities/order-event.entity';
 import { OrderEntity } from './entities/order.entity';
 import { OrderEventType } from './enums/order-event-type.enum';
@@ -76,7 +76,7 @@ export class OrdersService {
 
   async findAllWithFilters(
     params: OrderQueryParamsDto,
-  ): Promise<OrdersResponseDto> {
+  ): Promise<PaginatedResponse<Order>> {
     const {
       hospitalId,
       startDate,
@@ -159,22 +159,15 @@ export class OrdersService {
 
     // Calculate pagination
     const totalCount = filteredOrders.length;
-    const totalPages = Math.ceil(totalCount / pageSize);
-    const startIndex = (page - 1) * pageSize;
-    const endIndex = startIndex + pageSize;
+    const skip = PaginationUtil.calculateSkip(page, pageSize);
+    const paginatedOrders = filteredOrders.slice(skip, skip + pageSize);
 
-    // Get paginated results
-    const paginatedOrders = filteredOrders.slice(startIndex, endIndex);
-
-    return {
-      data: paginatedOrders,
-      pagination: {
-        currentPage: page,
-        pageSize,
-        totalCount,
-        totalPages,
-      },
-    };
+    return PaginationUtil.createResponse(
+      paginatedOrders,
+      page,
+      pageSize,
+      totalCount,
+    );
   }
 
   private getSortValue(order: Order, sortBy: string): any {

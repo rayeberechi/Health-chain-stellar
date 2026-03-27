@@ -6,6 +6,7 @@ import { CreateRiderDto } from './dto/create-rider.dto';
 import { UpdateRiderDto } from './dto/update-rider.dto';
 import { RegisterRiderDto } from './dto/register-rider.dto';
 import { RiderStatus } from './enums/rider-status.enum';
+import { PaginatedResponse, PaginationQueryDto, PaginationUtil } from '../common/pagination';
 
 @Injectable()
 export class RidersService {
@@ -14,16 +15,21 @@ export class RidersService {
     private readonly riderRepository: Repository<RiderEntity>,
   ) {}
 
-  async findAll(status?: RiderStatus) {
+  async findAll(
+    status?: RiderStatus,
+    paginationDto?: PaginationQueryDto,
+  ): Promise<PaginatedResponse<RiderEntity>> {
+    const { page = 1, pageSize = 25 } = paginationDto || {};
     const where = status ? { status } : {};
-    const riders = await this.riderRepository.find({
+
+    const [riders, totalCount] = await this.riderRepository.findAndCount({
       where,
       relations: ['user'],
+      skip: PaginationUtil.calculateSkip(page, pageSize),
+      take: pageSize,
     });
-    return {
-      message: 'Riders retrieved successfully',
-      data: riders,
-    };
+
+    return PaginationUtil.createResponse(riders, page, pageSize, totalCount);
   }
 
   async findOne(id: string) {

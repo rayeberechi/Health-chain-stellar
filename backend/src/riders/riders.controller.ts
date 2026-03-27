@@ -9,15 +9,18 @@ import {
   Query,
   HttpCode,
   HttpStatus,
+  ValidationPipe,
 } from '@nestjs/common';
 
 import { RequirePermissions } from '../auth/decorators/require-permissions.decorator';
 import { Permission } from '../auth/enums/permission.enum';
+import { PaginatedResponse, PaginationQueryDto } from '../common/pagination';
 import { CreateRiderDto } from './dto/create-rider.dto';
 import { UpdateRiderDto } from './dto/update-rider.dto';
 import { RegisterRiderDto } from './dto/register-rider.dto';
 import { RiderStatus } from './enums/rider-status.enum';
 import { User } from '../auth/decorators/user.decorator';
+import { RiderEntity } from './entities/rider.entity';
 
 import { RidersService } from './riders.service';
 
@@ -27,8 +30,12 @@ export class RidersController {
 
   @RequirePermissions(Permission.VIEW_RIDERS)
   @Get()
-  findAll(@Query('status') status?: RiderStatus) {
-    return this.ridersService.findAll(status);
+  findAll(
+    @Query(new ValidationPipe({ transform: true, whitelist: true }))
+    paginationDto: PaginationQueryDto,
+    @Query('status') status?: RiderStatus,
+  ): Promise<PaginatedResponse<RiderEntity>> {
+    return this.ridersService.findAll(status, paginationDto);
   }
 
   @RequirePermissions(Permission.VIEW_RIDERS)
