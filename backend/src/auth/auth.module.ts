@@ -16,6 +16,7 @@ import { RolePermissionEntity } from './entities/role-permission.entity';
 import { RoleEntity } from './entities/role.entity';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { PermissionsGuard } from './guards/permissions.guard';
+import { JwtKeyService } from './jwt-key.service';
 import { JwtStrategy } from './jwt.strategy';
 import { PermissionsService } from './permissions.service';
 import { AuthSessionRepository } from './repositories/auth-session.repository';
@@ -49,6 +50,7 @@ import { AuthSessionRepository } from './repositories/auth-session.repository';
   controllers: [AuthController],
   providers: [
     AuthService,
+    JwtKeyService,
     JwtStrategy,
     JwtAuthGuard,
     PermissionsGuard,
@@ -57,6 +59,7 @@ import { AuthSessionRepository } from './repositories/auth-session.repository';
   ],
   exports: [
     AuthService,
+    JwtKeyService,
     JwtStrategy,
     JwtAuthGuard,
     PermissionsGuard,

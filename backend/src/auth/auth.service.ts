@@ -23,11 +23,18 @@ import { AuthSessionFallbackStore } from '../redis/auth-session-fallback.store';
 import { UserEntity } from '../users/entities/user.entity';
 import { ErrorCode } from '../common/errors/error-codes.enum';
 
+import { JwtKeyService } from './jwt-key.service';
 import { JwtPayload } from './jwt.strategy';
 import { hashPassword, verifyPassword } from './utils/password.util';
 import { AuthSessionRepository } from './repositories/auth-session.repository';
 
 const PASSWORD_HISTORY_LIMIT = 3;
+
+export interface SessionMetadata {
+  ipAddress?: string | null;
+  userAgent?: string | null;
+  geoHint?: string | null;
+}
 
 @Injectable()
 export class AuthService {
@@ -40,6 +47,7 @@ export class AuthService {
   constructor(
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly jwtKeyService: JwtKeyService,
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     @InjectRepository(UserEntity)
     private readonly userRepository: Repository<UserEntity>,
@@ -67,7 +75,7 @@ export class AuthService {
     return valid ? user : null;
   }
 
-  async login(loginDto: { email: string; password: string; role?: string }) {
+  async login(loginDto: { email: string; password: string; role?: string }, meta: SessionMetadata = {}) {
     const user = await this.userRepository.findOne({
       where: { email: loginDto.email.toLowerCase() },
     });
@@ -108,8 +116,8 @@ export class AuthService {
 
     const { accessToken, refreshToken, refreshExpiresInSeconds } =
       await this.issueTokens(payload);
-    await this.createSession(user, sessionId, refreshExpiresInSeconds);
-    await this.enforceConcurrentSessionLimit(user.id);
+    await this.createSession(user, sessionId, refreshExpiresInSeconds, meta);
+    await this.enforceConcurrentSessionLimit(user.id, user.role ?? 'donor');
 
     return {
       access_token: accessToken,
@@ -135,6 +143,10 @@ export class AuthService {
     }
 
     const passwordHash = await hashPassword(registerDto.password);
+    const requireVerification = this.configService.get<boolean>(
+      'REQUIRE_EMAIL_VERIFICATION',
+      false,
+    );
     const user = this.userRepository.create({
       email,
       name: registerDto.name,
@@ -143,6 +155,7 @@ export class AuthService {
       passwordHistory: [],
       failedLoginAttempts: 0,
       lockedUntil: null,
+      emailVerified: !requireVerification,
     });
     const savedUser = await this.userRepository.save(user);
 
@@ -266,8 +279,10 @@ export class AuthService {
     refreshToken: string;
     refreshExpiresInSeconds: number;
   }> {
+    const { kid, secret } = this.jwtKeyService.getActiveKey();
     const accessToken = this.jwtService.sign(
       payload as unknown as Record<string, unknown>,
+      { secret, keyid: kid },
     );
     const refreshToken = await this.generateRefreshToken(payload);
     return {
@@ -281,15 +296,15 @@ export class AuthService {
     const jti = randomBytes(16).toString('hex');
     const refreshExpiresIn =
       this.configService.get<string>('JWT_REFRESH_EXPIRES_IN') ?? '7d';
+    const { kid, secret: refreshSecret } = this.jwtKeyService.getActiveKey();
 
     const refreshToken = this.jwtService.sign(
       { ...payload, jti } as unknown as Record<string, unknown>,
       {
         secret:
-          this.configService.get<string>('JWT_REFRESH_SECRET') ??
-          'refresh-secret',
-
+          this.configService.get<string>('JWT_REFRESH_SECRET') ?? refreshSecret,
         expiresIn: refreshExpiresIn as any,
+        keyid: kid,
       },
     );
 
@@ -444,24 +459,36 @@ export class AuthService {
 
   private async ensureAccountIsUsable(user: UserEntity) {
     if (!user.lockedUntil) {
-      return;
+      // check lock first, fall through to email verification
+    } else {
+      const now = Date.now();
+      const lockedUntil = user.lockedUntil.getTime();
+      if (lockedUntil <= now) {
+        user.lockedUntil = null;
+        user.failedLoginAttempts = 0;
+        await this.userRepository.save(user);
+      } else {
+        throw new ForbiddenException(
+          JSON.stringify({
+            code: ErrorCode.AUTH_ACCOUNT_LOCKED,
+            message: 'Account is locked. Please try again later',
+          }),
+        );
+      }
     }
 
-    const now = Date.now();
-    const lockedUntil = user.lockedUntil.getTime();
-    if (lockedUntil <= now) {
-      user.lockedUntil = null;
-      user.failedLoginAttempts = 0;
-      await this.userRepository.save(user);
-      return;
-    }
-
-    throw new ForbiddenException(
-      JSON.stringify({
-        code: ErrorCode.AUTH_ACCOUNT_LOCKED,
-        message: 'Account is locked. Please try again later',
-      }),
+    const requireVerification = this.configService.get<boolean>(
+      'REQUIRE_EMAIL_VERIFICATION',
+      false,
     );
+    if (requireVerification && !user.emailVerified) {
+      throw new ForbiddenException(
+        JSON.stringify({
+          code: ErrorCode.AUTH_EMAIL_NOT_VERIFIED,
+          message: 'Please verify your email address before logging in',
+        }),
+      );
+    }
   }
 
   private async recordFailedLoginAttempt(user: UserEntity) {
@@ -487,14 +514,18 @@ export class AuthService {
     user: UserEntity,
     sessionId: string,
     ttlSeconds: number,
+    meta: SessionMetadata = {},
   ) {
     const key = this.sessionKey(sessionId);
-    const sessionData = {
+    const sessionData: Record<string, string> = {
       userId: user.id,
       email: user.email,
       role: user.role,
       createdAt: new Date().toISOString(),
       expiresAt: new Date(Date.now() + ttlSeconds * 1000).toISOString(),
+      ...(meta.ipAddress && { ipAddress: meta.ipAddress }),
+      ...(meta.userAgent && { userAgent: meta.userAgent }),
+      ...(meta.geoHint && { geoHint: meta.geoHint }),
     };
 
     await this.circuitBreaker.execute(
@@ -521,6 +552,9 @@ export class AuthService {
         email: user.email,
         role: user.role,
         expiresAt: new Date(Date.now() + ttlSeconds * 1000),
+        ipAddress: meta.ipAddress ?? undefined,
+        userAgent: meta.userAgent ?? undefined,
+        geoHint: meta.geoHint ?? undefined,
       });
     } catch (error) {
       this.logger.warn(
@@ -593,10 +627,12 @@ export class AuthService {
     return 604800; // 7 days default
   }
 
-  private async enforceConcurrentSessionLimit(userId: string) {
-    const maxSessions = this.configService.get<number>('MAX_CONCURRENT_SESSIONS', 5);
+  private async enforceConcurrentSessionLimit(userId: string, role: string) {
+    const roleKey = `MAX_CONCURRENT_SESSIONS_${role.toUpperCase()}`;
+    const fallback = this.configService.get<number>('MAX_CONCURRENT_SESSIONS', 5);
+    const maxSessions = this.configService.get<number>(roleKey, fallback);
     const sessionIds = await this.redis.zrange(this.userSessionsKey(userId), 0, -1);
-    
+
     if (sessionIds.length > maxSessions) {
       const toRevoke = sessionIds.slice(0, sessionIds.length - maxSessions);
       await Promise.all(toRevoke.map(sid => this.revokeSession(userId, sid)));

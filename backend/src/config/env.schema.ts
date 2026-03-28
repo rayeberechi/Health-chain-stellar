@@ -82,6 +82,18 @@ export class EnvironmentVariables {
 
   @IsOptional()
   @IsString()
+  JWT_SECRET_KID: string = 'key-1';
+
+  @IsOptional()
+  @IsString()
+  JWT_PREVIOUS_SECRET: string = '';
+
+  @IsOptional()
+  @IsString()
+  JWT_PREVIOUS_SECRET_KID: string = 'key-0';
+
+  @IsOptional()
+  @IsString()
   JWT_EXPIRES_IN: string = '1h';
 
   @IsString()
@@ -232,4 +244,37 @@ export class EnvironmentVariables {
   @IsInt()
   @Min(1)
   RETENTION_ACTIVITY_LOG_DAYS: number = 90;
+
+  // ─── Email Verification ───────────────────────────────────────────────────
+
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
+  @IsBoolean()
+  REQUIRE_EMAIL_VERIFICATION: boolean = false;
+
+  // ─── Concurrent Session Limits ────────────────────────────────────────────
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  MAX_CONCURRENT_SESSIONS: number = 5;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  MAX_CONCURRENT_SESSIONS_DONOR: number = 3;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  MAX_CONCURRENT_SESSIONS_HOSPITAL: number = 5;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  MAX_CONCURRENT_SESSIONS_ADMIN: number = 2;
 }

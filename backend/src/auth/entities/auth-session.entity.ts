@@ -25,6 +25,9 @@ export class AuthSessionEntity {
   @Column({ type: 'varchar', length: 1024, nullable: true })
   userAgent: string;
 
+  @Column({ name: 'geo_hint', type: 'varchar', length: 128, nullable: true })
+  geoHint: string;
+
   @Column({ type: 'timestamp', default: () => 'now()' })
   createdAt: Date;
 

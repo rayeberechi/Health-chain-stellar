@@ -158,8 +158,13 @@ export class AuthController {
     description: 'Optional unique key for idempotent requests',
     required: false,
   })
-  async login(@Body() loginDto: LoginDto) {
-    return this.authService.login(loginDto);
+  async login(@Body() loginDto: LoginDto, @Request() req: any) {
+    const meta = {
+      ipAddress: (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ?? req.ip ?? null,
+      userAgent: (req.headers['user-agent'] as string) ?? null,
+      geoHint: (req.headers['x-geo-hint'] as string) ?? null,
+    };
+    return this.authService.login(loginDto, meta);
   }
 
   @Public()

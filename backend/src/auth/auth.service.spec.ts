@@ -16,10 +16,16 @@ import { UserEntity } from '../users/entities/user.entity';
 
 import { AuthService } from './auth.service';
 import { hashPassword } from './utils/password.util';
+import { JwtKeyService } from './jwt-key.service';
 
 describe('AuthService', () => {
   let service: AuthService;
   let userRepository: jest.Mocked<Partial<Repository<UserEntity>>>;
+
+  const mockJwtKeyService = {
+    getActiveKey: jest.fn().mockReturnValue({ kid: 'key-1', secret: 'test-secret' }),
+    resolveSecret: jest.fn().mockReturnValue('test-secret'),
+  };
 
   const mockJwtService = {
     sign: jest.fn(),
@@ -71,6 +77,10 @@ describe('AuthService', () => {
         {
           provide: ConfigService,
           useValue: mockConfigService,
+        },
+        {
+          provide: JwtKeyService,
+          useValue: mockJwtKeyService,
         },
         {
           provide: REDIS_CLIENT,
@@ -334,6 +344,248 @@ describe('AuthService', () => {
           'OldPassword123',
         ),
       ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('email verification gate', () => {
+    const makeUser = async (emailVerified: boolean) =>
+      ({
+        id: 'user-1',
+        email: 'test@example.com',
+        role: 'donor',
+        passwordHash: await hashPassword('password'),
+        failedLoginAttempts: 0,
+        lockedUntil: null,
+        emailVerified,
+      }) as UserEntity;
+
+    const buildServiceWithFlag = async (flag: boolean) => {
+      const configWithFlag = {
+        get: jest.fn((key: string, defaultValue?: any) => {
+          if (key === 'REQUIRE_EMAIL_VERIFICATION') return flag;
+          return mockConfigService.get(key, defaultValue);
+        }),
+      };
+      const mod = await Test.createTestingModule({
+        providers: [
+          AuthService,
+          { provide: JwtService, useValue: mockJwtService },
+          { provide: ConfigService, useValue: configWithFlag },
+          { provide: JwtKeyService, useValue: mockJwtKeyService },
+          { provide: REDIS_CLIENT, useValue: mockRedis },
+          { provide: getRepositoryToken(UserEntity), useValue: userRepository },
+        ],
+      }).compile();
+      return mod.get<AuthService>(AuthService);
+    };
+
+    it('allows login when flag is off and email is not verified', async () => {
+      const svc = await buildServiceWithFlag(false);
+      const user = await makeUser(false);
+      (userRepository.findOne as jest.Mock).mockResolvedValue(user);
+      (userRepository.save as jest.Mock).mockResolvedValue(user);
+      mockJwtService.sign
+        .mockReturnValueOnce('access-token')
+        .mockReturnValueOnce('refresh-token');
+
+      await expect(
+        svc.login({ email: 'test@example.com', password: 'password' }),
+      ).resolves.toMatchObject({ access_token: 'access-token' });
+    });
+
+    it('allows login when flag is on and email is verified', async () => {
+      const svc = await buildServiceWithFlag(true);
+      const user = await makeUser(true);
+      (userRepository.findOne as jest.Mock).mockResolvedValue(user);
+      (userRepository.save as jest.Mock).mockResolvedValue(user);
+      mockJwtService.sign
+        .mockReturnValueOnce('access-token')
+        .mockReturnValueOnce('refresh-token');
+
+      await expect(
+        svc.login({ email: 'test@example.com', password: 'password' }),
+      ).resolves.toMatchObject({ access_token: 'access-token' });
+    });
+
+    it('denies login when flag is on and email is not verified', async () => {
+      const svc = await buildServiceWithFlag(true);
+      const user = await makeUser(false);
+      (userRepository.findOne as jest.Mock).mockResolvedValue(user);
+
+      await expect(
+        svc.login({ email: 'test@example.com', password: 'password' }),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('sets emailVerified=false on register when flag is on', async () => {
+      const svc = await buildServiceWithFlag(true);
+      (userRepository.findOne as jest.Mock).mockResolvedValue(null);
+      (userRepository.create as jest.Mock).mockImplementation((data) => data);
+      (userRepository.save as jest.Mock).mockImplementation(async (u) => ({
+        ...u,
+        id: 'new-id',
+      }));
+
+      await svc.register({ email: 'new@example.com', password: 'password123' });
+
+      expect(userRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({ emailVerified: false }),
+      );
+    });
+
+    it('sets emailVerified=true on register when flag is off', async () => {
+      const svc = await buildServiceWithFlag(false);
+      (userRepository.findOne as jest.Mock).mockResolvedValue(null);
+      (userRepository.create as jest.Mock).mockImplementation((data) => data);
+      (userRepository.save as jest.Mock).mockImplementation(async (u) => ({
+        ...u,
+        id: 'new-id',
+      }));
+
+      await svc.register({ email: 'new@example.com', password: 'password123' });
+
+      expect(userRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({ emailVerified: true }),
+      );
+    });
+  });
+
+  describe('session metadata', () => {
+    const makeUser = async () =>
+      ({
+        id: 'user-1',
+        email: 'test@example.com',
+        role: 'donor',
+        passwordHash: await hashPassword('password'),
+        failedLoginAttempts: 0,
+        lockedUntil: null,
+        emailVerified: true,
+      }) as UserEntity;
+
+    it('stores ip, userAgent and geoHint in Redis session hash', async () => {
+      const user = await makeUser();
+      (userRepository.findOne as jest.Mock).mockResolvedValue(user);
+      (userRepository.save as jest.Mock).mockResolvedValue(user);
+      mockJwtService.sign
+        .mockReturnValueOnce('access-token')
+        .mockReturnValueOnce('refresh-token');
+
+      await service.login(
+        { email: 'test@example.com', password: 'password' },
+        { ipAddress: '1.2.3.4', userAgent: 'TestAgent/1.0', geoHint: 'Lagos, NG' },
+      );
+
+      expect(mockRedis.hset).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          ipAddress: '1.2.3.4',
+          userAgent: 'TestAgent/1.0',
+          geoHint: 'Lagos, NG',
+        }),
+      );
+    });
+
+    it('omits metadata keys when not provided', async () => {
+      const user = await makeUser();
+      (userRepository.findOne as jest.Mock).mockResolvedValue(user);
+      (userRepository.save as jest.Mock).mockResolvedValue(user);
+      mockJwtService.sign
+        .mockReturnValueOnce('access-token')
+        .mockReturnValueOnce('refresh-token');
+
+      await service.login({ email: 'test@example.com', password: 'password' });
+
+      const hsetCall = (mockRedis.hset as jest.Mock).mock.calls[0][1];
+      expect(hsetCall).not.toHaveProperty('ipAddress');
+      expect(hsetCall).not.toHaveProperty('userAgent');
+      expect(hsetCall).not.toHaveProperty('geoHint');
+    });
+  });
+
+  describe('per-role concurrent session limits', () => {
+    const makeUser = async (role: string) =>
+      ({
+        id: 'user-1',
+        email: 'test@example.com',
+        role,
+        passwordHash: await hashPassword('password'),
+        failedLoginAttempts: 0,
+        lockedUntil: null,
+        emailVerified: true,
+      }) as UserEntity;
+
+    const buildServiceWithLimits = async (limits: Record<string, number>) => {
+      const cfg = {
+        get: jest.fn((key: string, defaultValue?: any) => {
+          if (key in limits) return limits[key];
+          return mockConfigService.get(key, defaultValue);
+        }),
+      };
+      const mod = await Test.createTestingModule({
+        providers: [
+          AuthService,
+          { provide: JwtService, useValue: mockJwtService },
+          { provide: ConfigService, useValue: cfg },
+          { provide: JwtKeyService, useValue: mockJwtKeyService },
+          { provide: REDIS_CLIENT, useValue: mockRedis },
+          { provide: getRepositoryToken(UserEntity), useValue: userRepository },
+        ],
+      }).compile();
+      return mod.get<AuthService>(AuthService);
+    };
+
+    it('revokes oldest sessions when donor exceeds role limit', async () => {
+      const svc = await buildServiceWithLimits({ MAX_CONCURRENT_SESSIONS_DONOR: 2, MAX_CONCURRENT_SESSIONS: 5 });
+      const user = await makeUser('donor');
+      (userRepository.findOne as jest.Mock).mockResolvedValue(user);
+      (userRepository.save as jest.Mock).mockResolvedValue(user);
+      mockJwtService.sign.mockReturnValue('token');
+      // 3 existing sessions → exceeds limit of 2 → oldest 1 revoked
+      mockRedis.zrange.mockResolvedValue(['sid-old', 'sid-mid', 'sid-new']);
+      mockRedis.hgetall.mockResolvedValue({ userId: 'user-1', email: 'test@example.com' });
+
+      await svc.login({ email: 'test@example.com', password: 'password' });
+
+      expect(mockRedis.hset).toHaveBeenCalledWith(
+        expect.stringContaining('sid-old'),
+        expect.objectContaining({ revokedAt: expect.any(String) }),
+      );
+    });
+
+    it('uses admin-specific limit for admin role', async () => {
+      const svc = await buildServiceWithLimits({ MAX_CONCURRENT_SESSIONS_ADMIN: 1, MAX_CONCURRENT_SESSIONS: 5 });
+      const user = await makeUser('admin');
+      (userRepository.findOne as jest.Mock).mockResolvedValue(user);
+      (userRepository.save as jest.Mock).mockResolvedValue(user);
+      mockJwtService.sign.mockReturnValue('token');
+      // 2 existing sessions → exceeds admin limit of 1 → oldest 1 revoked
+      mockRedis.zrange.mockResolvedValue(['sid-a', 'sid-b']);
+      mockRedis.hgetall.mockResolvedValue({ userId: 'user-1', email: 'test@example.com' });
+
+      await svc.login({ email: 'test@example.com', password: 'password' });
+
+      expect(mockRedis.hset).toHaveBeenCalledWith(
+        expect.stringContaining('sid-a'),
+        expect.objectContaining({ revokedAt: expect.any(String) }),
+      );
+    });
+
+    it('falls back to MAX_CONCURRENT_SESSIONS for unknown role', async () => {
+      const svc = await buildServiceWithLimits({ MAX_CONCURRENT_SESSIONS: 2 });
+      const user = await makeUser('rider');
+      (userRepository.findOne as jest.Mock).mockResolvedValue(user);
+      (userRepository.save as jest.Mock).mockResolvedValue(user);
+      mockJwtService.sign.mockReturnValue('token');
+      mockRedis.zrange.mockResolvedValue(['sid-1', 'sid-2']);
+      mockRedis.hgetall.mockResolvedValue({ userId: 'user-1', email: 'test@example.com' });
+
+      await svc.login({ email: 'test@example.com', password: 'password' });
+
+      // exactly at limit — nothing revoked
+      expect(mockRedis.hset).not.toHaveBeenCalledWith(
+        expect.stringContaining('sid-1'),
+        expect.objectContaining({ revokedAt: expect.any(String) }),
+      );
     });
   });
 });
