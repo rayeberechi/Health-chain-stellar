@@ -209,6 +209,13 @@ export class EnvironmentVariables {
   @IsBoolean()
   THROTTLER_USE_REDIS: boolean = true;
 
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(10)
+  PASSWORD_HISTORY_LENGTH: number = 3;
+
   // ─── Inventory Forecasting ────────────────────────────────────────────────
 
   @IsOptional()
