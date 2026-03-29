@@ -23,6 +23,8 @@ import { Request } from 'express';
 
 import { RequirePermissions } from '../auth/decorators/require-permissions.decorator';
 import { Permission } from '../auth/enums/permission.enum';
+import { Auditable } from '../common/audit/auditable.decorator';
+import { AuditLogInterceptor } from '../common/audit/audit-log.interceptor';
 
 import { BloodInventoryQueryService } from './blood-inventory-query.service';
 import { BloodStatusService } from './blood-status.service';
@@ -184,6 +186,8 @@ export class BloodUnitsController {
 
 
   @RequirePermissions(Permission.UPDATE_BLOOD_STATUS)
+  @Auditable({ action: 'blood-unit.status-changed', resourceType: 'BloodUnit' })
+  @UseInterceptors(AuditLogInterceptor)
   @Patch(':id/status')
   @HttpCode(HttpStatus.OK)
   async updateBloodStatus(

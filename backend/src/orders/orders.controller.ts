@@ -11,11 +11,14 @@ import {
   HttpCode,
   HttpStatus,
   Request,
+  UseInterceptors,
   ValidationPipe,
 } from '@nestjs/common';
 
 import { RequirePermissions } from '../auth/decorators/require-permissions.decorator';
 import { Permission } from '../auth/enums/permission.enum';
+import { Auditable } from '../common/audit/auditable.decorator';
+import { AuditLogInterceptor } from '../common/audit/audit-log.interceptor';
 import { PaginatedResponse } from '../common/pagination';
 
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -178,6 +181,8 @@ export class OrdersController {
   }
 
   @RequirePermissions(Permission.UPDATE_ORDER)
+  @Auditable({ action: 'order.resolve-dispute', resourceType: 'Order' })
+  @UseInterceptors(AuditLogInterceptor)
   @Patch(':id/resolve-dispute')
   @HttpCode(HttpStatus.OK)
   resolveDispute(

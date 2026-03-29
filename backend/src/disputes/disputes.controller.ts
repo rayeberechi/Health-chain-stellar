@@ -48,12 +48,16 @@ export class DisputesController {
     return this.service.get(id);
   }
 
+  @Auditable({ action: 'dispute.assigned', resourceType: 'Dispute' })
+  @UseInterceptors(AuditLogInterceptor)
   @Patch(':id/assign')
   @RequirePermissions(Permission.DISPUTE_RESOLVE)
   assign(@Param('id') id: string, @Body() dto: AssignDisputeDto) {
     return this.service.assign(id, dto.operatorId);
   }
 
+  @Auditable({ action: 'dispute.resolved', resourceType: 'Dispute' })
+  @UseInterceptors(AuditLogInterceptor)
   @Patch(':id/resolve')
   @RequirePermissions(Permission.DISPUTE_RESOLVE)
   resolve(@Param('id') id: string, @Body() dto: ResolveDisputeDto) {

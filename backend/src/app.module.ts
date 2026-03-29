@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { BullModule } from '@nestjs/bullmq';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ThrottlerModule } from '@nestjs/throttler';
 
@@ -18,6 +19,7 @@ import { PermissionsGuard } from './auth/guards/permissions.guard';
 import { BlockchainModule } from './blockchain/blockchain.module';
 import { BloodRequestsModule } from './blood-requests/blood-requests.module';
 import { BloodUnitsModule } from './blood-units/blood-units.module';
+import { AuditLogModule } from './common/audit/audit-log.module';
 import { EventsModule } from './events/events.module';
 import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
 import { CorrelationIdService } from './common/middleware/correlation-id.service';
@@ -41,13 +43,21 @@ import { ReconciliationModule } from './reconciliation/reconciliation.module';
 
 import type Redis from 'ioredis';
 
-// Placeholder for activity logging interceptor (if exists, else will need to be implemented)
-// import { ActivityLoggingInterceptor } from './common/interceptors/activity-logging.interceptor';
-
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     EventEmitterModule.forRoot(),
+    // Global BullMQ Redis connection — individual modules register their own queues
+    BullModule.forRootAsync({
+      imports: [ConfigModule],
+      useFactory: (configService: ConfigService) => ({
+        connection: {
+          host: configService.get<string>('REDIS_HOST', 'localhost'),
+          port: configService.get<number>('REDIS_PORT', 6379),
+        },
+      }),
+      inject: [ConfigService],
+    }),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (config: ConfigService) => ({
@@ -113,7 +123,6 @@ import type Redis from 'ioredis';
   controllers: [AppController],
   providers: [
     AppService,
-    /** JWT authentication applied globally; use @Public() to opt-out */
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     /**
      * Runs after JWT so req.user is populated before role resolution.
@@ -122,7 +131,6 @@ import type Redis from 'ioredis';
     { provide: APP_GUARD, useClass: RoleAwareThrottlerGuard },
     /** Permission enforcement applied globally; use @RequirePermissions() to specify */
     { provide: APP_GUARD, useClass: PermissionsGuard },
-    // { provide: APP_INTERCEPTOR, useClass: ActivityLoggingInterceptor },
     CorrelationIdService,
   ],
 })
