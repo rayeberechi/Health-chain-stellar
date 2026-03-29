@@ -25,6 +25,7 @@ pub enum Error {
     InvalidDeliveryProof = 210,
     AlreadyVerified = 211,
     AlreadyUnverified = 212,
+    ContractPaused = 213,
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +154,7 @@ pub enum DataKey {
     Delivery(u64),
     // AccessControlContract (and IdentityContract role storage)
     AddressRoles(Address),
+    Paused,
 }
 
 // ---------------------------------------------------------------------------
@@ -176,6 +178,56 @@ impl IdentityContract {
 
         env.events().publish((symbol_short!("init"),), admin);
 
+        Ok(())
+    }
+
+    /// Pause all state-mutating functions. Admin only.
+    pub fn pause(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::Unauthorized)?;
+        if admin != stored {
+            return Err(Error::Unauthorized);
+        }
+        env.storage().instance().set(&DataKey::Paused, &true);
+        Ok(())
+    }
+
+    /// Unpause the contract. Admin only.
+    pub fn unpause(env: Env, admin: Address) -> Result<(), Error> {
+        admin.require_auth();
+        let stored: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::Unauthorized)?;
+        if admin != stored {
+            return Err(Error::Unauthorized);
+        }
+        env.storage().instance().set(&DataKey::Paused, &false);
+        Ok(())
+    }
+
+    /// Returns whether the contract is currently paused.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
+    fn require_not_paused(env: &Env) -> Result<(), Error> {
+        if env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+        {
+            return Err(Error::ContractPaused);
+        }
         Ok(())
     }
 
@@ -213,6 +265,7 @@ impl IdentityContract {
         document_hashes: Vec<BytesN<32>>,
     ) -> Result<Address, Error> {
         owner.require_auth();
+        Self::require_not_paused(&env)?;
 
         if name.len() == 0 || license_number.len() == 0 {
             return Err(Error::InvalidInput);
@@ -470,6 +523,7 @@ impl IdentityContract {
     /// Verify an organization (admin only)
     pub fn verify_organization(env: Env, admin: Address, org_id: Address) -> Result<(), Error> {
         admin.require_auth();
+        Self::require_not_paused(&env)?;
         Self::require_role(&env, &admin, Role::Admin)?;
 
         let org_key = DataKey::Org(org_id.clone());
@@ -509,6 +563,7 @@ impl IdentityContract {
         reason: String,
     ) -> Result<(), Error> {
         admin.require_auth();
+        Self::require_not_paused(&env)?;
         Self::require_role(&env, &admin, Role::Admin)?;
 
         let org_key = DataKey::Org(org_id.clone());
@@ -550,6 +605,7 @@ impl IdentityContract {
         request_id: u64,
     ) -> Result<(), Error> {
         rater.require_auth();
+        Self::require_not_paused(&env)?;
 
         if rating < 1 || rating > 5 {
             return Err(Error::InvalidRating);
@@ -629,6 +685,7 @@ impl IdentityContract {
         badge_type: BadgeType,
     ) -> Result<(), Error> {
         admin.require_auth();
+        Self::require_not_paused(&env)?;
 
         // Verify caller is admin
         let stored_admin: Address = env
@@ -687,6 +744,7 @@ impl IdentityContract {
         badge_type: BadgeType,
     ) -> Result<(), Error> {
         admin.require_auth();
+        Self::require_not_paused(&env)?;
 
         let stored_admin: Address = env
             .storage()
@@ -746,6 +804,7 @@ impl IdentityContract {
         temperature_ok: bool,
     ) -> Result<(), Error> {
         verifier.require_auth();
+        Self::require_not_paused(&env)?;
 
         if quantity_delivered == 0 {
             return Err(Error::InvalidDeliveryProof);
