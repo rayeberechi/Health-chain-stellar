@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 
 import { SorobanService } from '../blockchain/services/soroban.service';
+import { LIFEBANK_REQUESTS_METHODS } from '../blockchain/contracts/lifebank-contracts';
 import { CompensationService } from '../common/compensation/compensation.service';
 import {
   BloodRequestIrrecoverableError,
@@ -101,7 +102,9 @@ describe('BloodRequestsService', () => {
         2,
       );
       expect(mockSorobanService.submitTransactionAndWait).toHaveBeenCalledWith(
-        expect.objectContaining({ contractMethod: 'create_blood_request' }),
+        expect.objectContaining({
+          contractMethod: LIFEBANK_REQUESTS_METHODS.createRequest,
+        }),
       );
       expect(mockBloodRequestRepo.save).toHaveBeenCalled();
       expect(mockEmailProvider.send).toHaveBeenCalled();
